@@ -1,0 +1,9 @@
+.build/
+.swiftpm/
+DerivedData/
+.DS_Store
+samples/
+xcuserdata/
+docs/superpowers/
+AGENTS.md
+dist/
