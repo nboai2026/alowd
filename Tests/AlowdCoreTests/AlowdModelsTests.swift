@@ -133,3 +133,20 @@ extension AlowdModelsTests {
         #expect(settings.showInDock, "Profiles written before the Dock setting must still show a Dock icon")
     }
 }
+
+struct SpokenLanguageTests {
+    @Test func autoIsFirstAndCarriesNoCode() {
+        #expect(SpokenLanguage.supported.first?.code == nil, "Auto-detect must be the first option")
+    }
+
+    @Test func codesAreUniqueAndWhisperShaped() {
+        let codes = SpokenLanguage.supported.compactMap(\.code)
+        #expect(Set(codes).count == codes.count, "Language codes must be unique")
+        #expect(codes.allSatisfy { $0.count == 2 }, "Whisper expects two-letter language codes")
+    }
+
+    @Test func coversTheAdvertisedLanguages() {
+        let codes = Set(SpokenLanguage.supported.compactMap(\.code))
+        #expect(codes.isSuperset(of: ["en", "fr", "es", "de"]), "English, French, Spanish and German must be selectable")
+    }
+}

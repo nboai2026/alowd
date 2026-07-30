@@ -27,7 +27,7 @@ Alowd is free, open source, and fully offline — and it still does the thing th
 - **Personal dictionary** — add words and phrases by hand, define misspelling → correction rules, import/export CSV.
 - **History dashboard** — every dictation, grouped by day, searchable, with word count and streak stats. Nothing you dictate is ever lost, even if pasting fails.
 - **Writing modes** — raw, casual, professional, or agent-prompt (which preserves paths, commands, and identifiers verbatim).
-- **Any language** — Whisper is multilingual. Dictate in French and get French, or have it translate to English as you speak.
+- **Any language** — Whisper is multilingual. English, French, Spanish and German are in the picker (auto-detect too); dictate in your language and get it back, or have it translate to English as you speak.
 - **Model picker** — from `base` (fast) to `large-v3-turbo` (most accurate).
 - **Optional local rewrite** — if you run [Ollama](https://ollama.com), Alowd can clean up transcripts with a local LLM. Localhost only; falls back instantly if it is slow or unavailable.
 

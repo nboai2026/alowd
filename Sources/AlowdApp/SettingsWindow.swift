@@ -265,9 +265,9 @@ struct SettingsView: View {
                 get: { model.settings.language },
                 set: { newValue in model.save { $0.language = newValue } }
             )) {
-                Text("Auto").tag(nil as String?)
-                Text("Français").tag("fr" as String?)
-                Text("English").tag("en" as String?)
+                ForEach(SpokenLanguage.supported) { language in
+                    Text(language.displayName).tag(language.code)
+                }
             }
             Toggle("Translate to English", isOn: Binding(
                 get: { model.settings.translateToEnglish },

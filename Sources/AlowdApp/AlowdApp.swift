@@ -55,9 +55,9 @@ struct AlowdApp: App {
                 get: { model.selectedLanguage },
                 set: { model.selectLanguage($0) }
             )) {
-                Text("Auto").tag(nil as String?)
-                Text("Français").tag("fr" as String?)
-                Text("English").tag("en" as String?)
+                ForEach(SpokenLanguage.supported) { language in
+                    Text(language.displayName).tag(language.code)
+                }
             }
 
             Divider()
