@@ -6,6 +6,9 @@ public final class WhisperKitTranscriptionEngine: TranscriptionEngine, @unchecke
     private let whisperKit: WhisperKit
     private let language: String?
     private let translateToEnglish: Bool
+    /// The live-partials path and the final decode share this one WhisperKit
+    /// instance, and overlapping decodes corrupt its state — see DecodeGate.
+    private let gate = DecodeGate()
 
     public init(
         modelPath: URL,
@@ -25,8 +28,12 @@ public final class WhisperKitTranscriptionEngine: TranscriptionEngine, @unchecke
     }
 
     public func transcribe(audioFile: URL) async throws -> TranscriptResult {
-        let results = try await whisperKit.transcribe(audioPath: audioFile.path, decodeOptions: decodingOptions())
-        let text = results.map(\.text).joined(separator: " ")
+        let whisperKit = self.whisperKit
+        let options = decodingOptions()
+        let text = try await gate.run {
+            let results = try await whisperKit.transcribe(audioPath: audioFile.path, decodeOptions: options)
+            return results.map(\.text).joined(separator: " ")
+        }
         return TranscriptResult(text: text, confidence: 1.0)
     }
 
@@ -43,10 +50,18 @@ extension WhisperKitTranscriptionEngine: LiveSampleTranscribing {
     /// Live partial decode path: same engine, same language/translate options,
     /// fed raw 16kHz mono samples accumulated during recording.
     public func transcribeLiveSamples(_ samples: [Float]) async throws -> String {
-        let results: [TranscriptionResult] = try await whisperKit.transcribe(
-            audioArray: samples,
-            decodeOptions: decodingOptions()
-        )
-        return results.map(\.text).joined(separator: " ")
+        let whisperKit = self.whisperKit
+        let options = decodingOptions()
+        // Skipped rather than queued when the final decode holds the model:
+        // a partial that waited its turn is stale, and the batch result is
+        // what actually gets inserted.
+        let text = try await gate.runIfFree {
+            let results: [TranscriptionResult] = try await whisperKit.transcribe(
+                audioArray: samples,
+                decodeOptions: options
+            )
+            return results.map(\.text).joined(separator: " ")
+        }
+        return text ?? ""
     }
 }

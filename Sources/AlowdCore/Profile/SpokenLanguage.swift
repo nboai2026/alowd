@@ -25,6 +25,7 @@ public struct SpokenLanguage: Identifiable, Equatable, Sendable {
         SpokenLanguage(code: "en", displayName: "English"),
         SpokenLanguage(code: "fr", displayName: "Français"),
         SpokenLanguage(code: "es", displayName: "Español"),
+        SpokenLanguage(code: "pt", displayName: "Português"),
         SpokenLanguage(code: "de", displayName: "Deutsch")
     ]
 }
