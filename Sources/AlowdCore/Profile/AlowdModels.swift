@@ -48,8 +48,10 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var profileDirectory: URL
     /// Whisper language code (for example "fr" or "en"); nil means auto-detect.
     public var language: String?
-    /// Defaults to true to preserve the app's established behavior of
-    /// translating dictation into English.
+    /// Translate dictation into English instead of transcribing it as spoken.
+    /// Defaults to false: someone who selects Español expects Spanish back,
+    /// and silently translating their speech is the wrong first impression.
+    /// Existing profiles keep whatever they already saved.
     public var translateToEnglish: Bool
     /// WhisperKit model variant to transcribe with (for example "base",
     /// "small", or "large-v3-turbo").
@@ -77,7 +79,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         ollamaModel: "llama3.2:3b",
         profileDirectory: URL(fileURLWithPath: NSString(string: "~/Alowd").expandingTildeInPath),
         language: nil,
-        translateToEnglish: true,
+        translateToEnglish: false,
         modelVariant: "base",
         hotkeyMode: .toggle,
         historyRetentionDays: nil,
@@ -96,7 +98,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         ollamaModel: String,
         profileDirectory: URL,
         language: String? = nil,
-        translateToEnglish: Bool = true,
+        translateToEnglish: Bool = false,
         modelVariant: String = "base",
         hotkeyMode: HotkeyMode = .toggle,
         historyRetentionDays: Int? = nil,

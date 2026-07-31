@@ -195,6 +195,49 @@ public enum CommonWords {
         la-bas gauche droite droit face bout travers autour malgre selon sauf grace parce parce-que puisque afin \
         cependant pourtant neanmoins toutefois ainsi aussi egalement notamment plutot presque tellement autant \
         davantage moins mieux pire beaucoup peu jamais rien personne aucunement quelquun quelquune chacun chacune \
-        tout-le-monde
+        tout-le-monde \
+        el la los las un una unos unas de del al y o pero si no que como cuando donde quien cual cuyo porque \
+        para por con sin sobre entre hasta desde hacia segun durante mediante contra tras ante bajo \
+        ser estar tener hacer poder decir ir ver dar saber querer llegar pasar deber poner parecer quedar creer \
+        hablar llevar dejar seguir encontrar llamar venir pensar salir volver tomar conocer vivir sentir tratar \
+        mirar contar empezar esperar buscar existir entrar trabajar escribir perder producir ocurrir recibir \
+        recordar terminar permitir aparecer conseguir comenzar servir sacar necesitar mantener resultar leer caer \
+        cambiar presentar crear abrir considerar oir acabar convertir ganar formar traer partir morir aceptar \
+        soy eres es somos son era eran fue fueron sido siendo estoy esta estamos estan estaba estuvo tengo tiene \
+        tenemos tienen tenia tuvo hago hace hacemos hacen hacia hizo puedo puede podemos pueden podia pudo \
+        digo dice decimos dicen decia dijo voy va vamos van iba fui veo ve vemos ven veia vio doy da damos dan \
+        yo tu el ella nosotros vosotros ellos ellas usted ustedes me te se nos os le les lo mi mis su sus nuestro \
+        nuestra vuestro tuyo suyo mio este esta esto estos estas ese esa eso esos esas aquel aquella aquello \
+        muy mucho mucha muchos muchas poco poca pocos pocas todo toda todos todas otro otra otros otras mismo misma \
+        tanto tanta tan mas menos bien mal mejor mas peor siempre nunca jamas ya todavia aun ahora antes despues \
+        luego entonces hoy ayer manana tarde noche dia dias semana mes ano anos hora horas minuto momento tiempo \
+        vez veces siempre casi solo solamente tambien tampoco quiza quizas acaso claro cierto verdad seguro \
+        aqui alli alla ahi cerca lejos dentro fuera arriba abajo delante detras encima debajo alrededor \
+        cosa cosas persona personas gente hombre mujer nino nina hijo hija padre madre familia amigo amiga \
+        casa trabajo vida mundo pais ciudad lugar parte forma manera modo caso punto vez tipo grupo numero \
+        agua tierra fuego aire sol luna cielo mar rio calle camino puerta ventana mesa silla libro papel \
+        bueno buena buenos buenas malo mala grande pequeno pequena nuevo nueva viejo vieja joven alto alta bajo \
+        largo corto ancho estrecho fuerte debil facil dificil posible imposible importante necesario util \
+        primero primera segundo tercero ultimo proximo siguiente anterior mejor peor unico solo propio \
+        gracias hola adios buenos senor senora por-favor perdon disculpe vale bueno pues entonces \
+        der die das den dem des ein eine einen einem einer eines und oder aber wenn dass weil denn sondern \
+        ich du er sie es wir ihr mich dich sich uns euch mir dir ihm ihnen mein dein sein ihre unser euer \
+        sein haben werden konnen mussen sollen wollen mogen durfen machen gehen kommen sehen geben nehmen \
+        sagen finden denken wissen glauben halten stehen bleiben liegen heissen heißen bringen sprechen lesen \
+        schreiben spielen lernen fragen antworten arbeiten leben wohnen essen trinken schlafen fahren laufen \
+        bin bist ist sind seid war waren gewesen habe hast hat hatte hatten gehabt wird wurde wurden geworden \
+        kann kannst konnte muss musst musste soll sollte will willst wollte darf mag mochte \
+        nicht kein keine keinen nichts nie niemals immer oft manchmal selten schon noch nur auch sehr mehr weniger \
+        gut gute guter gutes besser beste schlecht gross grosse groß große klein kleine neu neue alt alte jung \
+        lang kurz hoch niedrig stark schwach leicht schwer einfach schwierig moglich wichtig richtig falsch schon \
+        hier dort da wo woher wohin oben unten vorne hinten links rechts innen aussen außen nah fern uberall \
+        heute gestern morgen jetzt dann damals bald spater fruher wieder zuerst zuletzt endlich gleich \
+        tag tage woche monat jahr jahre stunde minute zeit mal mensch menschen mann frau kind kinder leute \
+        haus hause arbeit leben welt land stadt ort platz weg strasse straße tur fenster tisch buch wasser \
+        was wer wie wann warum welche welcher welches wieviel etwas alles viele viel wenig jeder jede jedes \
+        andere anderen beide alle man jemand niemand selbst zusammen allein eben gerade \
+        auf aus bei mit nach seit von zu vor uber unter zwischen durch fur gegen ohne um an in neben hinter \
+        ja nein bitte danke hallo tschuss guten entschuldigung naturlich vielleicht wirklich eigentlich \
+        eins zwei drei vier funf sechs sieben acht neun zehn hundert tausend erste zweite letzte nachste
         """
 }

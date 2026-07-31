@@ -57,7 +57,10 @@ struct AlowdModelsTests {
         }
         """.utf8))
         #expect(settings.language == nil, "Old settings must default to auto language detection")
-        #expect(settings.translateToEnglish, "Old settings must keep the established translate-to-English behavior")
+        #expect(
+            !settings.translateToEnglish,
+            "A settings file with no translate key must transcribe as spoken, not translate to English"
+        )
     }
 
     @Test func emptySettingsObjectDecodesToDefaults() throws {

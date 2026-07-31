@@ -11,7 +11,7 @@ public final class WhisperKitTranscriptionEngine: TranscriptionEngine, @unchecke
         modelPath: URL,
         modelRoot: URL,
         language: String? = nil,
-        translateToEnglish: Bool = true
+        translateToEnglish: Bool = false
     ) async throws {
         self.language = language
         self.translateToEnglish = translateToEnglish

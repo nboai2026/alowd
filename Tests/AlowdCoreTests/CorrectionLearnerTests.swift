@@ -157,6 +157,25 @@ struct CommonWordsTests {
         #expect(!CommonWords.contains("Grafana"), "Product names must not be in the list")
     }
 
+    @Test func containsCommonSpanishWords() {
+        for word in ["trabajo", "gracias", "mañana", "niño", "también", "aquí", "está", "años"] {
+            #expect(CommonWords.contains(word), "Common Spanish word '\(word)' must be filtered from learning")
+        }
+    }
+
+    @Test func containsCommonGermanWords() {
+        // Written with real umlauts and ß: these must match the folded entries,
+        // otherwise German dictation floods the dictionary with everyday words.
+        for word in ["arbeiten", "über", "für", "können", "müssen", "schön", "größe", "natürlich", "Straße"] {
+            #expect(CommonWords.contains(word), "Common German word '\(word)' must be filtered from learning")
+        }
+    }
+
+    @Test func distinctiveSpanishAndGermanTermsStillLearnable() {
+        #expect(!CommonWords.contains("Kubernetes"), "Technical terms must stay learnable")
+        #expect(!CommonWords.contains("Datenschutzbeauftragter"), "Rare compounds must stay learnable")
+    }
+
     @Test func listIsRoughlyTwoThousandWords() {
         #expect(CommonWords.words.count > 1500, "Frequency list must stay substantial (has \(CommonWords.words.count))")
     }
