@@ -18,7 +18,10 @@ public enum TextInserterError: Error, LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .accessibilityNotGranted:
-            "Alowd is missing Accessibility permission, so it could not paste the text."
+            // Rebuilding the app changes its ad-hoc signature, and macOS then
+            // silently stops honouring the existing grant — the checkbox still
+            // looks enabled, which sends people hunting in the wrong place.
+            "Alowd is missing Accessibility permission, so it could not paste the text. After rebuilding the app you must remove Alowd from System Settings > Privacy & Security > Accessibility and add it again — macOS stops trusting the old entry even though it still looks enabled."
         case .secureInputActive:
             "A secure input field (such as a password field) is active, so Alowd could not paste the text."
         case .pasteEventCreationFailed:

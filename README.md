@@ -53,7 +53,7 @@ swift build && swift run AlowdApp
 swift test
 ```
 
-Because the bundle is ad-hoc signed rather than notarized, macOS may block the first double-click: right-click the app and choose **Open**, then confirm. macOS ties Microphone and Accessibility permissions to an app's signature, so after rebuilding or moving the app you may need to re-grant them in **System Settings → Privacy & Security**. Using the packaged `.app` (rather than `swift run`) keeps those grants stable.
+Because the bundle is ad-hoc signed rather than notarized, macOS may block the first double-click: right-click the app and choose **Open**, then confirm. macOS ties Microphone and Accessibility permissions to an app's signature, and every rebuild produces a new ad-hoc signature — so after rebuilding, dictation transcribes but silently stops pasting. Toggling the checkbox is not enough: **remove Alowd from System Settings → Privacy & Security → Accessibility with the “–” button, then add the rebuilt `.app` again**, because the stale entry still looks enabled. Using the packaged `.app` (rather than `swift run`) keeps grants stable between rebuilds of the same binary.
 </details>
 
 ## Permissions, and what Alowd deliberately does not ask for
