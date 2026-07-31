@@ -30,11 +30,14 @@ public final class WhisperKitTranscriptionEngine: TranscriptionEngine, @unchecke
     public func transcribe(audioFile: URL) async throws -> TranscriptResult {
         let whisperKit = self.whisperKit
         let options = decodingOptions()
-        let text = try await gate.run {
+        let decoded = try await gate.run {
             let results = try await whisperKit.transcribe(audioPath: audioFile.path, decodeOptions: options)
-            return results.map(\.text).joined(separator: " ")
+            return (
+                text: results.map(\.text).joined(separator: " "),
+                language: results.first?.language
+            )
         }
-        return TranscriptResult(text: text, confidence: 1.0)
+        return TranscriptResult(text: decoded.text, confidence: 1.0, language: decoded.language)
     }
 
     private func decodingOptions() -> DecodingOptions {

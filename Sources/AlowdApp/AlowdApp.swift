@@ -403,7 +403,13 @@ final class DictationMenuModel: ObservableObject {
         stopTask = Task {
             do {
                 let finalText = try await runner.stopDictation(selectedMode: mode)
-                let timing = runner.lastTiming.map { " (\($0.summary))" } ?? ""
+                // Show the decoded language when auto-detect chose it: a wrong
+                // guess makes Whisper translate, and seeing "en" after
+                // speaking French is the fastest way to notice.
+                let detected = selectedLanguage == nil
+                    ? runner.lastDetectedLanguage.map { ", \($0)" } ?? ""
+                    : ""
+                let timing = runner.lastTiming.map { " (\($0.summary)\(detected))" } ?? ""
                 statusMessage = "Inserted \(finalText.count) characters.\(timing)"
                 overlayPhase = .done(finalText)
                 canUndoLastInsertion = !finalText.isEmpty

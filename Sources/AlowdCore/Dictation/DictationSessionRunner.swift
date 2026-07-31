@@ -63,6 +63,9 @@ public final class DictationSessionRunner {
     public private(set) var state: State = .idle
     /// Stage timings from the most recent completed dictation.
     public private(set) var lastTiming: DictationTiming?
+    /// Language the engine decoded the last dictation with, when it reported
+    /// one. Shown to the user so a wrong auto-detect is obvious.
+    public private(set) var lastDetectedLanguage: String?
 
     /// Recordings shorter than this are discarded rather than transcribed: a
     /// stray tap (especially in push-to-talk) otherwise yields a header-only
@@ -162,13 +165,14 @@ public final class DictationSessionRunner {
 
         let audioDuration = Self.audioDuration(of: transcriptionAudioFile)
 
-        let ((rawText, finalText), timing) = try await pipeline.produceTextTimed(
+        let ((rawText, finalText), timing, detectedLanguage) = try await pipeline.produceTextTimed(
             audioFile: transcriptionAudioFile,
             mode: mode,
             dictionary: dictionary,
             snippets: snippets
         )
         lastTiming = timing
+        lastDetectedLanguage = detectedLanguage
 
         // A cancelled dictation is discarded entirely — the user asked for it
         // to be thrown away, so it must not linger in history either.

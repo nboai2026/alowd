@@ -30,3 +30,46 @@ private final class FakeTextInserter: TextInserter, @unchecked Sendable {
         insertedTexts.append(text)
     }
 }
+
+struct DetectedLanguageReportingTests {
+    private struct LanguageReportingEngine: TranscriptionEngine {
+        let language: String?
+        func transcribe(audioFile: URL) async throws -> TranscriptResult {
+            TranscriptResult(text: "bonjour le monde", confidence: 1, language: language)
+        }
+    }
+
+    @Test func pipelineReportsTheDecodedLanguage() async throws {
+        let pipeline = DictationPipeline(
+            engine: LanguageReportingEngine(language: "fr"),
+            processor: RuleBasedPostProcessor(),
+            inserter: RecordingInserter()
+        )
+        let result = try await pipeline.produceTextTimed(
+            audioFile: URL(fileURLWithPath: "/tmp/none.wav"),
+            mode: .raw,
+            dictionary: [],
+            snippets: []
+        )
+        #expect(result.language == "fr", "The decoded language must reach the caller so the UI can show it")
+    }
+
+    @Test func missingLanguageIsReportedAsNil() async throws {
+        let pipeline = DictationPipeline(
+            engine: LanguageReportingEngine(language: nil),
+            processor: RuleBasedPostProcessor(),
+            inserter: RecordingInserter()
+        )
+        let result = try await pipeline.produceTextTimed(
+            audioFile: URL(fileURLWithPath: "/tmp/none.wav"),
+            mode: .raw,
+            dictionary: [],
+            snippets: []
+        )
+        #expect(result.language == nil, "An engine that reports no language must not invent one")
+    }
+}
+
+private final class RecordingInserter: TextInserter, @unchecked Sendable {
+    func insert(_ text: String) throws {}
+}

@@ -32,7 +32,7 @@ public final class DictationPipeline: Sendable {
         mode: WritingMode,
         dictionary: [DictionaryTerm],
         snippets: [Snippet]
-    ) async throws -> (text: (rawText: String, finalText: String), timing: DictationTiming) {
+    ) async throws -> (text: (rawText: String, finalText: String), timing: DictationTiming, language: String?) {
         // The engine and processor are not themselves cancellation-aware, so
         // check between stages: a cancel during transcription at least skips
         // the (often slower) rewrite instead of running the whole pipeline.
@@ -51,7 +51,7 @@ public final class DictationPipeline: Sendable {
             transcribeSeconds: processStart.timeIntervalSince(transcribeStart),
             postProcessSeconds: Date().timeIntervalSince(processStart)
         )
-        return ((transcript.text, finalText), timing)
+        return ((transcript.text, finalText), timing, transcript.language)
     }
 
     public func insert(_ text: String) throws {
