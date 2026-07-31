@@ -45,7 +45,8 @@ public final class DictationPipeline: Sendable {
             rawText: transcript.text,
             mode: mode,
             dictionary: dictionary,
-            snippets: snippets
+            snippets: snippets,
+            language: transcript.language
         ))
         let timing = DictationTiming(
             transcribeSeconds: processStart.timeIntervalSince(transcribeStart),

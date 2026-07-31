@@ -30,6 +30,56 @@ struct OllamaPostProcessorTests {
     }
 }
 
+
+struct OllamaLanguagePreservationTests {
+    /// Regression: the rewrite instructions are English, and without an
+    /// explicit rule qwen turned "Merci." into "Thanks." — verified against a
+    /// real local model before this rule was added.
+    @Test func promptNamesTheDetectedLanguage() async throws {
+        let client = FakeOllamaHTTPClient(responseText: "Merci.", shouldFail: false)
+        let processor = OllamaPostProcessor(
+            config: .default,
+            client: client,
+            fallback: RuleBasedPostProcessor()
+        )
+        _ = try await processor.process(PostProcessingInput(
+            rawText: "Merci.",
+            mode: .myVoiceCasual,
+            dictionary: [],
+            snippets: [],
+            language: "fr"
+        ))
+        let prompt = try #require(client.prompts.first)
+        #expect(prompt.contains("French"), "The prompt must name the detected language")
+        #expect(prompt.contains("Never translate"), "The prompt must forbid translation")
+    }
+
+    @Test func promptStillForbidsTranslationWithoutADetectedLanguage() async throws {
+        let client = FakeOllamaHTTPClient(responseText: "ok", shouldFail: false)
+        let processor = OllamaPostProcessor(
+            config: .default,
+            client: client,
+            fallback: RuleBasedPostProcessor()
+        )
+        _ = try await processor.process(PostProcessingInput(
+            rawText: "Merci.",
+            mode: .myVoiceCasual,
+            dictionary: [],
+            snippets: [],
+            language: nil
+        ))
+        let prompt = try #require(client.prompts.first)
+        #expect(prompt.contains("same language as the transcript"), "Without a detected language the prompt must still pin the language")
+        #expect(prompt.contains("Never translate"), "The prompt must forbid translation")
+    }
+
+    @Test func languageNamesAreHumanReadable() {
+        #expect(OllamaPostProcessor.languageName(for: "fr") == "French")
+        #expect(OllamaPostProcessor.languageName(for: "pt") == "Portuguese")
+        #expect(OllamaPostProcessor.languageName(for: "zz") == "zz", "Unknown codes fall back to the code itself")
+    }
+}
+
 private final class FakeOllamaHTTPClient: OllamaHTTPClient, @unchecked Sendable {
     var prompts: [String] = []
     let responseText: String
