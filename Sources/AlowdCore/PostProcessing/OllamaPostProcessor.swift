@@ -42,6 +42,14 @@ public final class OllamaPostProcessor: PostProcessor {
             return input.rawText
         }
 
+        // Nothing was decoded — a hotkey tapped by accident, or silence. A chat
+        // model handed an empty transcript answers conversationally ("Sure!
+        // Please provide the transcript..."), and that reply is what gets pasted
+        // into whatever the user had focused.
+        guard !input.rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return input.rawText
+        }
+
         do {
             return try await client
                 .generate(prompt: buildPrompt(input), config: config)

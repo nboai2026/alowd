@@ -116,4 +116,27 @@ struct ProfileStoreTests {
         #expect(!FileManager.default.fileExists(atPath: legacy.path), "bootstrap must migrate the legacy sibling directory")
         #expect(FileManager.default.fileExists(atPath: new.appendingPathComponent("data/dictionary.json").path), "Migrated data must be preserved")
     }
+
+    @Test func updateSettingsKeepsChangesMadeSinceTheCallerLoaded() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = ProfileStore(root: root)
+        try store.bootstrap()
+
+        // The Settings window loads once, on appear...
+        let windowCopy = try store.loadSettings()
+        #expect(windowCopy.language == nil)
+
+        // ...then the menu bar sets the dictation language behind its back.
+        try store.updateSettings { $0.language = "fr" }
+
+        // Flipping an unrelated toggle in the still-open window must not drag
+        // the stale language back with it.
+        try store.updateSettings { $0.showOverlay = false }
+
+        let onDisk = try store.loadSettings()
+        #expect(onDisk.language == "fr", "An unrelated change reverted the language")
+        #expect(onDisk.showOverlay == false)
+    }
 }

@@ -86,6 +86,20 @@ public final class DictationSessionRunner {
         cachedPipeline?.pipeline.engine as? LiveSampleTranscribing
     }
 
+    /// Builds and caches the pipeline before a dictation finishes, so the
+    /// live-partials path can share its engine.
+    ///
+    /// Without this the cache is empty until the first `stopDictation`, so the
+    /// first recording of every launch made the live path load a second
+    /// WhisperKit — a second copy of a multi-gigabyte model, with its own
+    /// DecodeGate (so the two instances never serialize against each other) and
+    /// its own detected-language memory, resident for the rest of the process.
+    public func prepareLiveSampleTranscriber() async throws -> (any LiveSampleTranscribing)? {
+        let settings = try profile.loadSettings()
+        let pipeline = try await makePipeline(settings: settings)
+        return pipeline.engine as? LiveSampleTranscribing
+    }
+
     public init(
         recorder: TemporaryAudioRecorder,
         profile: ProfileReading,

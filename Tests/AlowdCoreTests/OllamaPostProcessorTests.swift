@@ -21,6 +21,25 @@ struct OllamaPostProcessorTests {
         #expect(client.prompts.count == 1, "Prompt mode must call Ollama once")
     }
 
+    /// Regression: an empty decode reached the model, which answered
+    /// conversationally ("Sure! Please provide the transcript you'd like me to
+    /// rewrite in your casual voice.") and that reply was pasted into the
+    /// user's document. Seen in real history.
+    @Test func emptyTranscriptNeverReachesOllama() async throws {
+        let client = FakeOllamaHTTPClient(responseText: "Sure! Please provide the transcript.", shouldFail: false)
+        let processor = OllamaPostProcessor(config: .default, client: client, fallback: RuleBasedPostProcessor())
+        for blank in ["", "   ", "\n\t "] {
+            let output = try await processor.process(PostProcessingInput(
+                rawText: blank,
+                mode: .myVoiceCasual,
+                dictionary: [],
+                snippets: []
+            ))
+            #expect(output == blank, "A blank transcript must come back blank, not as chat filler")
+        }
+        #expect(client.prompts.isEmpty, "A blank transcript must not be sent to Ollama")
+    }
+
     @Test func ollamaFailureFallsBackToRules() async throws {
         let client = FakeOllamaHTTPClient(responseText: "", shouldFail: true)
         let processor = OllamaPostProcessor(config: .default, client: client, fallback: RuleBasedPostProcessor())

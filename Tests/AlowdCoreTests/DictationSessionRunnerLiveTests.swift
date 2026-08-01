@@ -60,6 +60,36 @@ struct DictationSessionRunnerLiveTests {
         #expect(runner.cachedLiveSampleTranscriber == nil, "No cached engine exists before the first dictation")
     }
 
+    /// Regression: the cache stayed empty until the first `stopDictation`, so
+    /// the live path loaded a WhisperKit of its own for the first recording of
+    /// every launch — two copies of a multi-gigabyte model resident at once,
+    /// with separate decode gates, for the rest of the process.
+    @Test func prepareLiveSampleTranscriberBuildsTheSameEngineTheDictationUses() async throws {
+        let (runner, factory) = makeCountingRunner()
+
+        let prepared = try await runner.prepareLiveSampleTranscriber()
+        #expect(prepared != nil, "Preparing must hand back the shared engine, not nil")
+        #expect(factory.callCount == 1, "Preparing builds the pipeline exactly once")
+        #expect(runner.cachedLiveSampleTranscriber != nil, "Preparing must populate the cache")
+
+        _ = try runner.startRecording()
+        _ = try await runner.stopDictation(selectedMode: .raw)
+
+        #expect(factory.callCount == 1, "The dictation must reuse the prepared pipeline, not build a second one")
+        #expect(
+            prepared as AnyObject === runner.cachedLiveSampleTranscriber as AnyObject,
+            "Live partials and the final decode must run on one engine instance"
+        )
+    }
+
+    @Test func preparingTwiceReusesTheCachedPipeline() async throws {
+        let (runner, factory) = makeCountingRunner()
+        let first = try await runner.prepareLiveSampleTranscriber()
+        let second = try await runner.prepareLiveSampleTranscriber()
+        #expect(factory.callCount == 1, "A second prepare must hit the cache")
+        #expect(first as AnyObject === second as AnyObject)
+    }
+
     // MARK: - Fixtures
 
     private func makeRunner(live: FakeLiveTranscriptionController?) -> DictationSessionRunner {
@@ -80,6 +110,51 @@ struct DictationSessionRunnerLiveTests {
         )
         runner.liveTranscription = live
         return runner
+    }
+
+    /// A runner whose engine also decodes live samples, so the shared-instance
+    /// behaviour is observable, and whose factory counts how often it is asked
+    /// to build a pipeline.
+    private func makeCountingRunner() -> (DictationSessionRunner, CountingPipelineFactory) {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("alowd-live-tests-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let factory = CountingPipelineFactory()
+        let runner = DictationSessionRunner(
+            recorder: LiveFakeRecorder(audioFile: root.appendingPathComponent("dictation.wav")),
+            profile: LiveFakeProfileReader(),
+            history: LiveFakeHistoryWriter(),
+            pipelineFactory: { _ in factory.make() }
+        )
+        return (runner, factory)
+    }
+}
+
+/// Engine that satisfies both the batch and the live-sample seams, so a test
+/// can tell whether the two paths share one instance.
+private final class LiveCapableStubEngine: TranscriptionEngine, LiveSampleTranscribing, @unchecked Sendable {
+    func transcribe(audioFile: URL) async throws -> TranscriptResult {
+        TranscriptResult(text: "batch result", confidence: 1.0, language: nil)
+    }
+
+    func transcribeLiveSamples(_ samples: [Float]) async throws -> String { "partial" }
+}
+
+private final class CountingPipelineFactory: @unchecked Sendable {
+    private(set) var callCount = 0
+    private var engine: LiveCapableStubEngine?
+
+    /// Returns a pipeline over one engine instance, mirroring how the real
+    /// factory hands back a freshly loaded WhisperKit per call.
+    func make() -> DictationPipeline {
+        callCount += 1
+        let engine = LiveCapableStubEngine()
+        self.engine = engine
+        return DictationPipeline(
+            engine: engine,
+            processor: RuleBasedPostProcessor(),
+            inserter: LiveFakeTextInserter()
+        )
     }
 }
 

@@ -50,9 +50,28 @@ final class SettingsWindowModel: ObservableObject {
     @Published var accessibilityGranted = false
 
     private let profileStore: ProfileStore
+    private var settingsObserver: NSObjectProtocol?
 
     init(profileStore: ProfileStore = ProfileStore()) {
         self.profileStore = profileStore
+        // The menu bar writes the same file. Without this the window keeps
+        // showing whatever it read on appear, so the user sees Auto while
+        // dictation is actually pinned to a language they changed since.
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: .alowdSettingsChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            let isOwnWrite = (note.object as AnyObject?) === self
+            MainActor.assumeIsolated {
+                guard let self, !isOwnWrite else { return }
+                guard let fresh = try? self.profileStore.loadSettings() else { return }
+                // Deliberately does not touch ollamaBaseURLText: only this
+                // window writes that field, so there is nothing to pick up, and
+                // overwriting it would discard whatever is half-typed in it.
+                self.settings = fresh
+            }
+        }
     }
 
     func reload() {
@@ -70,13 +89,22 @@ final class SettingsWindowModel: ObservableObject {
     }
 
     /// Persists the current settings and tells the menu-bar model to re-read them.
+    ///
+    /// Re-reads from disk before applying the change. This window loads its copy
+    /// once, on appear, but the menu bar writes the same file (selectLanguage and
+    /// friends), so mutating the stale copy and writing the whole struct back
+    /// silently reverts whatever changed in between. Language is the painful one:
+    /// pick Français in the menu bar, then flip any toggle here, and dictation
+    /// goes back to decoding French audio with an English language token.
     func save(_ mutate: (inout AppSettings) -> Void) {
-        mutate(&settings)
         do {
             try profileStore.bootstrap()
-            try profileStore.saveSettings(settings)
+            settings = try profileStore.updateSettings(mutate)
             errorMessage = nil
-            NotificationCenter.default.post(name: .alowdSettingsChanged, object: nil)
+            // Tagged with self so the observer above ignores this window's own
+            // writes: `settings` already holds what was just saved, and
+            // re-reading would stomp any edit in flight.
+            NotificationCenter.default.post(name: .alowdSettingsChanged, object: self)
         } catch {
             errorMessage = "Could not save settings: \(error.localizedDescription)"
         }

@@ -94,6 +94,20 @@ public final class ProfileStore: ProfileReading, @unchecked Sendable {
         try encoder.encode(settings).write(to: settingsURL, options: [.atomic])
     }
 
+    /// Applies `mutate` to the settings currently on disk and writes the result.
+    ///
+    /// The menu bar and the Settings window both write this file, and both used
+    /// to save a whole `AppSettings` they had loaded earlier — so the last writer
+    /// silently reverted every field the other had changed since. Changing one
+    /// setting must not resurrect stale values for the rest.
+    @discardableResult
+    public func updateSettings(_ mutate: (inout AppSettings) -> Void) throws -> AppSettings {
+        var settings = try loadSettings()
+        mutate(&settings)
+        try saveSettings(settings)
+        return settings
+    }
+
     public func loadDictionary() throws -> [DictionaryTerm] {
         try decoder.decode([DictionaryTerm].self, from: Data(contentsOf: dictionaryURL))
     }

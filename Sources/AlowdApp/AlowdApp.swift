@@ -229,13 +229,22 @@ final class DictationMenuModel: ObservableObject {
         }
     }
 
+    /// Applies one change to settings.json and tells the rest of the app.
+    ///
+    /// Read-modify-write on disk: the Settings window writes the same file, so
+    /// saving a whole `AppSettings` loaded earlier reverted whatever it had
+    /// changed since. Posting the notification is what keeps an open Settings
+    /// window from showing — and then re-saving — stale values.
+    private func persistSettings(_ mutate: (inout AppSettings) -> Void) throws {
+        try profileStore.bootstrap()
+        try profileStore.updateSettings(mutate)
+        NotificationCenter.default.post(name: .alowdSettingsChanged, object: nil)
+    }
+
     func selectMode(_ mode: WritingMode) {
         selectedMode = mode
         do {
-            try profileStore.bootstrap()
-            var settings = try profileStore.loadSettings()
-            settings.defaultMode = mode
-            try profileStore.saveSettings(settings)
+            try persistSettings { $0.defaultMode = mode }
             statusMessage = "Mode: \(mode.displayName)"
         } catch {
             statusMessage = "Mode changed for this run. Could not save settings: \(error.localizedDescription)"
@@ -248,10 +257,7 @@ final class DictationMenuModel: ObservableObject {
         do {
             try hotkeyController.register(shortcut)
             selectedShortcut = shortcut
-            try profileStore.bootstrap()
-            var settings = try profileStore.loadSettings()
-            settings.dictationShortcut = shortcut
-            try profileStore.saveSettings(settings)
+            try persistSettings { $0.dictationShortcut = shortcut }
             statusMessage = "Shortcut: \(shortcut.displayName)"
         } catch {
             statusMessage = "Could not use \(shortcut.displayName): \(error.localizedDescription)"
@@ -261,10 +267,7 @@ final class DictationMenuModel: ObservableObject {
     func selectLanguage(_ language: String?) {
         selectedLanguage = language
         do {
-            try profileStore.bootstrap()
-            var settings = try profileStore.loadSettings()
-            settings.language = language
-            try profileStore.saveSettings(settings)
+            try persistSettings { $0.language = language }
             statusMessage = "Language: \(language ?? "Auto")"
         } catch {
             statusMessage = "Language changed for this run. Could not save settings: \(error.localizedDescription)"
@@ -275,10 +278,7 @@ final class DictationMenuModel: ObservableObject {
         hotkeyMode = mode
         hotkeyController.pushToTalkEnabled = mode == .pushToTalk
         do {
-            try profileStore.bootstrap()
-            var settings = try profileStore.loadSettings()
-            settings.hotkeyMode = mode
-            try profileStore.saveSettings(settings)
+            try persistSettings { $0.hotkeyMode = mode }
         } catch {
             statusMessage = "Hotkey mode changed for this run. Could not save settings: \(error.localizedDescription)"
             return
@@ -291,10 +291,7 @@ final class DictationMenuModel: ObservableObject {
     func setTranslateToEnglish(_ enabled: Bool) {
         translateToEnglish = enabled
         do {
-            try profileStore.bootstrap()
-            var settings = try profileStore.loadSettings()
-            settings.translateToEnglish = enabled
-            try profileStore.saveSettings(settings)
+            try persistSettings { $0.translateToEnglish = enabled }
             statusMessage = enabled ? "Translation to English on." : "Translation to English off."
         } catch {
             statusMessage = "Translation changed for this run. Could not save settings: \(error.localizedDescription)"
@@ -634,8 +631,14 @@ final class DictationMenuModel: ObservableObject {
     /// Prefers the runner's already-loaded WhisperKit engine; otherwise loads
     /// (and caches) a live-only engine from the same model folder.
     private func liveTranscriptionEngine() async throws -> any LiveSampleTranscribing {
-        if let shared = runner.cachedLiveSampleTranscriber {
-            return shared
+        // Always ask the runner rather than reading its cache directly: it
+        // re-checks the cached pipeline against current settings, so changing
+        // language or translation mid-session rebuilds instead of leaving live
+        // partials on the engine the previous settings built. It also means the
+        // first recording of a launch shares the runner's engine instead of
+        // loading a second WhisperKit that would stay resident alongside it.
+        if let prepared = try? await runner.prepareLiveSampleTranscriber() {
+            return prepared
         }
         let settings = try profileStore.loadSettings()
         let key = LiveEngineCacheKey(
