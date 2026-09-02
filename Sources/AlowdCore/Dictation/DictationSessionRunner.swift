@@ -59,6 +59,9 @@ public final class DictationSessionRunner {
     private let pipelineFactory: DictationPipelineFactory
     private let now: () -> Date
     private var cachedPipeline: (key: PipelineCacheKey, pipeline: DictationPipeline)?
+    /// The build currently in progress, so concurrent callers join it instead
+    /// of starting a second one. See `makePipeline`.
+    private var pipelineBuild: (key: PipelineCacheKey, task: Task<DictationPipeline, Error>)?
     private var recordingStartedAt: Date?
     public private(set) var state: State = .idle
     /// Stage timings from the most recent completed dictation.
@@ -210,14 +213,41 @@ public final class DictationSessionRunner {
 
     /// Reuses the cached pipeline (and its loaded WhisperKit engine) until a
     /// setting that affects the pipeline changes.
+    ///
+    /// Callers that arrive while a build is still running join that build
+    /// rather than starting their own. Checking only `cachedPipeline` was not
+    /// enough: the cache is written after the `await`, and this method is
+    /// reentrant, so `stopDictation` asking for the pipeline while the
+    /// live-partials path was still loading saw an empty cache and started a
+    /// second load of the same model. Two concurrent CoreML loads each trigger
+    /// the on-device ANE compile of a multi-gigabyte encoder, race for the same
+    /// cache slot, and the loser's work is orphaned — minutes of compilation
+    /// and gigabytes of writes for a model that was already being loaded.
     private func makePipeline(settings: AppSettings) async throws -> DictationPipeline {
         let key = PipelineCacheKey(settings: settings)
         if let cachedPipeline, cachedPipeline.key == key {
             return cachedPipeline.pipeline
         }
-        let pipeline = try await pipelineFactory(settings)
-        cachedPipeline = (key, pipeline)
-        return pipeline
+        if let pipelineBuild, pipelineBuild.key == key {
+            return try await pipelineBuild.task.value
+        }
+
+        let factory = pipelineFactory
+        // Unstructured on purpose: whoever started the build may be cancelled
+        // (the live-partials task is, on every stop), and the other callers
+        // still need the model that is already loading.
+        let build = Task { @MainActor [weak self] in
+            let pipeline = try await factory(settings)
+            self?.cachedPipeline = (key, pipeline)
+            return pipeline
+        }
+        pipelineBuild = (key, build)
+        defer {
+            if pipelineBuild?.key == key {
+                pipelineBuild = nil
+            }
+        }
+        return try await build.value
     }
 
     /// Best-effort audio length for history stats (WPM); nil when the file is
