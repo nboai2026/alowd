@@ -92,7 +92,7 @@ public final class OllamaPostProcessor: PostProcessor {
             guard !Self.composedADocument(from: input.rawText, into: rewritten) else {
                 return try await fallback.process(input)
             }
-            return rewritten
+            return Self.replacingEmDashes(in: rewritten)
         } catch {
             return try await fallback.process(input)
         }
@@ -117,6 +117,45 @@ public final class OllamaPostProcessor: PostProcessor {
     /// Losing the rewrite on a long dictation costs some tidying; letting it
     /// through costs invented content the user may not notice they sent.
     public static let maximumRewriteLength = 2_400
+
+    /// Replaces em and en dashes with the comma the speaker would have paused
+    /// on, because the model puts them in and the speaker never does.
+    ///
+    /// Whisper does not emit them: across 313 real transcripts, zero contained
+    /// an em dash while 111 of the rewrites did, and not one of those had a
+    /// dash in its source. So every dash reaching here was invented during the
+    /// rewrite, and removing them cannot destroy anything that was said. Doing
+    /// it in code rather than in the prompt because models are famously poor
+    /// at not reaching for this particular punctuation mark.
+    static func replacingEmDashes(in text: String) -> String {
+        var result = ""
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            guard character == "—" || character == "–" else {
+                result.append(character)
+                index = text.index(after: index)
+                continue
+            }
+
+            // Absorb whitespace on both sides so " — " and "—" behave alike.
+            while result.last == " " { result.removeLast() }
+            index = text.index(after: index)
+            while index < text.endIndex, text[index] == " " {
+                index = text.index(after: index)
+            }
+
+            // "so—and" becomes "so, and", but "wait,—and" must not gain a
+            // second comma, and a leading dash gets no punctuation at all.
+            if let last = result.last, !",;:.!?".contains(last) {
+                result.append(",")
+            }
+            if !result.isEmpty, index < text.endIndex {
+                result.append(" ")
+            }
+        }
+        return result
+    }
 
     /// True when the rewrite contains Markdown structure the transcript did
     /// not, which means the model wrote a document rather than rewriting

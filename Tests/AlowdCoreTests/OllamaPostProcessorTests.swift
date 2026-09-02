@@ -112,6 +112,36 @@ struct OllamaLanguagePreservationTests {
         #expect(prompt.contains("their own order"), "Casual mode must preserve the speaker's ordering")
     }
 
+    /// The model reaches for em dashes constantly and Whisper never produces
+    /// one: across 313 real transcripts, zero sources contained an em dash
+    /// while 111 rewrites did. They are always invented, so they are always
+    /// safe to replace.
+    @Test func emDashesFromTheModelBecomeCommas() {
+        let cases = [
+            ("sub accounts—and maybe JC too.", "sub accounts, and maybe JC too."),
+            ("your video was the best — except for Meta.", "your video was the best, except for Meta."),
+            ("this account—Eden, Loic, maybe Phoenix.", "this account, Eden, Loic, maybe Phoenix."),
+            ("check this week—emails, Slack—for the report.", "check this week, emails, Slack, for the report."),
+            ("an en dash – also goes", "an en dash, also goes")
+        ]
+        for (input, expected) in cases {
+            #expect(OllamaPostProcessor.replacingEmDashes(in: input) == expected)
+        }
+    }
+
+    @Test func emDashReplacementNeverStacksPunctuation() {
+        #expect(OllamaPostProcessor.replacingEmDashes(in: "wait, — and then") == "wait, and then")
+        #expect(OllamaPostProcessor.replacingEmDashes(in: "done. — next") == "done. next")
+        #expect(OllamaPostProcessor.replacingEmDashes(in: "—leading dash") == "leading dash")
+        #expect(OllamaPostProcessor.replacingEmDashes(in: "trailing dash—") == "trailing dash,")
+    }
+
+    @Test func ordinaryPunctuationSurvivesUntouched() {
+        for text in ["Well-known and self-serve stay hyphenated.", "No dashes here at all.", ""] {
+            #expect(OllamaPostProcessor.replacingEmDashes(in: text) == text)
+        }
+    }
+
     @Test func languageNamesAreHumanReadable() {
         #expect(OllamaPostProcessor.languageName(for: "fr") == "French")
         #expect(OllamaPostProcessor.languageName(for: "pt") == "Portuguese")
