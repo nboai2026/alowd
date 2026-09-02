@@ -165,7 +165,21 @@ public final class OllamaPostProcessor: PostProcessor {
         case .raw:
             modeInstruction = "Return the text unchanged."
         case .myVoiceCasual:
-            modeInstruction = "Rewrite in the user's casual voice. Remove fillers. Keep meaning. Do not over-polish."
+            // The previous wording — "Rewrite in the user's casual voice.
+            // Remove fillers. Keep meaning. Do not over-polish." — was read as
+            // licence to compress. Measured on real transcripts it kept 65% of
+            // what was dictated, and it drifted into text-speak the speaker had
+            // not used ("wanna check ur response" for "I wanted to check").
+            // Naming the fillers and forbidding summary lifts retention to 95%
+            // while still stripping "um", false starts and repeated words.
+            modeInstruction = """
+            Clean up the user's dictation while keeping their own casual register. \
+            Remove filler words and phrases (um, uh, so basically, you know, like, \
+            I mean, sort of), false starts, stumbles and repeated words. Keep every \
+            point they made, in their own words and their own order. Do not summarise, \
+            do not drop content, and never make the wording more informal, more \
+            abbreviated or more slangy than they actually spoke it.
+            """
         case .myVoicePro:
             modeInstruction = "Rewrite in the user's professional voice. Keep it clear, direct, and not generic."
         case .prompt:

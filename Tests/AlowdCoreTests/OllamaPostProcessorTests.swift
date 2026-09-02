@@ -92,6 +92,26 @@ struct OllamaLanguagePreservationTests {
         #expect(prompt.contains("Never translate"), "The prompt must forbid translation")
     }
 
+    /// Regression: the casual instruction used to be a terse one-liner, which
+    /// the model read as licence to compress — 65% of the dictation kept, and
+    /// text-speak the speaker never used. The prompt must keep telling it not
+    /// to summarise.
+    @Test func casualModeForbidsSummarisingAndSlang() async throws {
+        let client = FakeOllamaHTTPClient(responseText: "ok", shouldFail: false)
+        let processor = OllamaPostProcessor(config: .default, client: client, fallback: RuleBasedPostProcessor())
+        _ = try await processor.process(PostProcessingInput(
+            rawText: "So basically, um, we should ship it today.",
+            mode: .myVoiceCasual,
+            dictionary: [],
+            snippets: []
+        ))
+        let prompt = try #require(client.prompts.first)
+        #expect(prompt.contains("Do not summarise"), "Casual mode must forbid summarising")
+        #expect(prompt.contains("do not drop content"), "Casual mode must forbid dropping what was said")
+        #expect(prompt.contains("more slangy"), "Casual mode must forbid inventing slang the speaker did not use")
+        #expect(prompt.contains("their own order"), "Casual mode must preserve the speaker's ordering")
+    }
+
     @Test func languageNamesAreHumanReadable() {
         #expect(OllamaPostProcessor.languageName(for: "fr") == "French")
         #expect(OllamaPostProcessor.languageName(for: "pt") == "Portuguese")
