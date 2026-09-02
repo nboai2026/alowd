@@ -99,6 +99,62 @@ struct OllamaLanguagePreservationTests {
     }
 }
 
+/// The rewrite answers in about a second against a model Ollama already holds
+/// in memory and takes tens of seconds against a cold one — past the request
+/// timeout, so the rewrite is dropped. Abandoning the request also aborts the
+/// load, so without these two fields the model never becomes resident and the
+/// rewrite silently never runs at all.
+struct OllamaResidencyTests {
+    private func encoded(_ value: some Encodable) throws -> [String: Any] {
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(value)
+        return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    @Test func configKeepsTheModelResidentLongerThanOllamasOwnDefault() {
+        // Ollama unloads after five minutes by default, which is shorter than
+        // the gap between dictations, so every one of them paid a cold load.
+        #expect(OllamaConfig.default.keepAlive == "30m")
+    }
+
+    @Test func generateRequestAsksOllamaToKeepTheModelResident() throws {
+        let config = OllamaConfig(baseURL: URL(string: "http://127.0.0.1:11434")!, model: "m", keepAlive: "45m")
+        let json = try encoded(OllamaGenerateRequest(
+            model: config.model,
+            prompt: "hello",
+            stream: false,
+            keep_alive: config.keepAlive
+        ))
+        #expect(json["keep_alive"] as? String == "45m", "Every rewrite must renew the model's residency")
+        #expect(json["prompt"] as? String == "hello")
+        #expect(json["stream"] as? Bool == false)
+    }
+
+    @Test func preloadRequestLoadsTheModelWithoutGenerating() throws {
+        // Ollama treats an empty prompt as a warm-up: it loads the weights and
+        // answers `done_reason: "load"` rather than generating tokens.
+        let json = try encoded(OllamaPreloadRequest(model: "m", keep_alive: "30m"))
+        #expect(json["prompt"] as? String == "", "An empty prompt is what makes this a load rather than a generation")
+        #expect(json["keep_alive"] as? String == "30m")
+        #expect(json["model"] as? String == "m")
+    }
+
+    @Test func preloadIsOptionalForClientsThatCannotWarm() async throws {
+        // The default implementation exists so fakes and non-HTTP clients are
+        // not forced to implement warming; it must be a silent no-op.
+        let client = FakeOllamaHTTPClient(responseText: "ok", shouldFail: false)
+        try await client.preload(config: .default)
+        #expect(client.prompts.isEmpty, "Warming must not look like a rewrite")
+    }
+
+    @Test func warmingGetsALongerBudgetThanADictation() {
+        #expect(
+            URLSessionOllamaHTTPClient.preloadTimeout > OllamaConfig.default.timeout,
+            "Loading weights off disk is slower than answering with them, and warming blocks no one"
+        )
+    }
+}
+
 private final class FakeOllamaHTTPClient: OllamaHTTPClient, @unchecked Sendable {
     var prompts: [String] = []
     let responseText: String

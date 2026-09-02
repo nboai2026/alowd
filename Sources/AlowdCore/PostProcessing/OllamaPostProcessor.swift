@@ -9,21 +9,48 @@ public struct OllamaConfig: Codable, Equatable, Sendable {
     /// Give up on the rewrite after this long and use the rule-based result;
     /// a large local model can otherwise add half a minute to every dictation.
     public var timeout: TimeInterval
+    /// How long Ollama keeps the model resident after answering, in its own
+    /// duration syntax ("30m", "0" to unload at once, "-1" to never unload).
+    ///
+    /// This is the whole difference between the rewrite working and silently
+    /// never running. Measured on qwen3.6:35b: ~1s against a resident model,
+    /// ~27s against a cold one — and since the cold case blows `timeout`, the
+    /// request is abandoned, which also aborts Ollama's load, so the model
+    /// never becomes resident and every later dictation is cold too. Ollama's
+    /// own default is five minutes, shorter than the gap between dictations.
+    public var keepAlive: String
 
     public static let `default` = OllamaConfig(
         baseURL: URL(string: "http://127.0.0.1:11434")!,
         model: "llama3.2:3b"
     )
 
-    public init(baseURL: URL, model: String, timeout: TimeInterval = 12) {
+    public init(
+        baseURL: URL,
+        model: String,
+        timeout: TimeInterval = 12,
+        keepAlive: String = "30m"
+    ) {
         self.baseURL = baseURL
         self.model = model
         self.timeout = timeout
+        self.keepAlive = keepAlive
     }
 }
 
 public protocol OllamaHTTPClient: AnyObject, Sendable {
     func generate(prompt: String, config: OllamaConfig) async throws -> String
+
+    /// Loads the model into memory without generating anything, so the first
+    /// dictation does not pay the cold load. Best effort: callers ignore
+    /// failures, because a rewrite that has to load the model still works,
+    /// it is just slow enough to hit `timeout` and fall back.
+    func preload(config: OllamaConfig) async throws
+}
+
+public extension OllamaHTTPClient {
+    /// Clients with nothing to warm (tests, fakes) need not implement this.
+    func preload(config: OllamaConfig) async throws {}
 }
 
 public final class OllamaPostProcessor: PostProcessor {
@@ -117,42 +144,73 @@ public final class OllamaPostProcessor: PostProcessor {
 }
 
 public final class URLSessionOllamaHTTPClient: OllamaHTTPClient {
+    /// Loading a multi-gigabyte model off disk is far slower than answering
+    /// with it, so warming gets its own budget. It runs in the background and
+    /// blocks nobody, unlike `config.timeout`, which bounds a user's dictation.
+    static let preloadTimeout: TimeInterval = 120
+
     public init() {}
 
     public func generate(prompt: String, config: OllamaConfig) async throws -> String {
-        guard config.baseURL.host == "127.0.0.1" || config.baseURL.host == "localhost" else {
-            throw URLError(.unsupportedURL)
-        }
-
-        let endpoint = config.baseURL.appendingPathComponent("api/generate")
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        // A slow or oversized local model must not hold dictation hostage:
-        // on timeout the caller falls back to the rule-based processor.
-        request.timeoutInterval = config.timeout
-        request.httpBody = try JSONEncoder().encode(OllamaGenerateRequest(
+        let body = try JSONEncoder().encode(OllamaGenerateRequest(
             model: config.model,
             prompt: prompt,
-            stream: false
+            stream: false,
+            keep_alive: config.keepAlive
         ))
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw URLError(.badServerResponse)
-        }
+        // A slow or oversized local model must not hold dictation hostage:
+        // on timeout the caller falls back to the rule-based processor.
+        let data = try await post(body: body, config: config, timeout: config.timeout)
         let decoded = try JSONDecoder().decode(OllamaGenerateResponse.self, from: data)
         return try OllamaReasoningStripper.answer(
             from: decoded.response,
             truncated: decoded.done_reason == "length"
         )
     }
+
+    /// An empty prompt makes Ollama load the model and return immediately
+    /// (`done_reason: "load"`) instead of generating.
+    public func preload(config: OllamaConfig) async throws {
+        let body = try JSONEncoder().encode(OllamaPreloadRequest(
+            model: config.model,
+            keep_alive: config.keepAlive
+        ))
+        _ = try await post(body: body, config: config, timeout: Self.preloadTimeout)
+    }
+
+    private func post(body: Data, config: OllamaConfig, timeout: TimeInterval) async throws -> Data {
+        guard config.baseURL.host == "127.0.0.1" || config.baseURL.host == "localhost" else {
+            throw URLError(.unsupportedURL)
+        }
+
+        var request = URLRequest(url: config.baseURL.appendingPathComponent("api/generate"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = timeout
+        request.httpBody = body
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+        return data
+    }
 }
 
-private struct OllamaGenerateRequest: Codable {
+/// Loads a model without generating: Ollama treats an empty prompt as a
+/// warm-up and answers `done_reason: "load"`.
+struct OllamaPreloadRequest: Codable {
+    var model: String
+    var prompt = ""
+    var keep_alive: String
+}
+
+struct OllamaGenerateRequest: Codable {
     var model: String
     var prompt: String
     var stream: Bool
+    /// Keeps the model resident between dictations; see OllamaConfig.keepAlive.
+    var keep_alive: String
     /// Reasoning models (qwen3, deepseek-r1, …) otherwise emit hundreds of
     /// thinking tokens before a one-line rewrite, which dominates dictation
     /// latency. Servers that predate this field ignore it.
@@ -162,7 +220,7 @@ private struct OllamaGenerateRequest: Codable {
     var options = OllamaOptions()
 }
 
-private struct OllamaOptions: Codable {
+struct OllamaOptions: Codable {
     var num_predict = 900
 }
 

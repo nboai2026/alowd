@@ -141,6 +141,9 @@ final class DictationMenuModel: ObservableObject {
     /// Set after each successful insertion so "Undo Last Insertion" can enable.
     @Published private(set) var canUndoLastInsertion = false
     private var modelVariant = AppSettings.default.modelVariant
+    /// The rewrite config already sent to Ollama for warming, so repeated
+    /// settings reloads do not re-request the same load. See warmOllamaIfNeeded.
+    private var warmedOllamaConfig: OllamaConfig?
 
     /// Latest live partial transcript (display-only; batch result wins).
     @Published private(set) var livePartialTranscript = ""
@@ -536,6 +539,31 @@ final class DictationMenuModel: ObservableObject {
         NSApp.setActivationPolicy(settings.showInDock ? .regular : .accessory)
         modelVariant = settings.modelVariant
         showOverlay = settings.showOverlay
+        warmOllamaIfNeeded(settings)
+    }
+
+    /// Loads the rewrite model into Ollama ahead of the first dictation.
+    ///
+    /// The rewrite answers in about a second against a resident model and takes
+    /// tens of seconds against a cold one — long enough to blow the request
+    /// timeout, at which point the rewrite is abandoned and the rule-based
+    /// result is used instead. Worse, abandoning the request also aborts
+    /// Ollama's load, so the model never becomes resident and every later
+    /// dictation is cold too: the rewrite silently never runs at all. Warming
+    /// it here, off the dictation path, is what breaks that cycle.
+    ///
+    /// Entirely best effort. Ollama may not be running, and that is fine — the
+    /// rewrite falls back exactly as it does today.
+    private func warmOllamaIfNeeded(_ settings: AppSettings) {
+        guard settings.enableOllamaRewrite else { return }
+        let config = OllamaConfig(baseURL: settings.ollamaBaseURL, model: settings.ollamaModel)
+        // Re-warming the model already warming (or warm) would just queue a
+        // second load of the same weights behind the first.
+        guard config != warmedOllamaConfig else { return }
+        warmedOllamaConfig = config
+        Task.detached {
+            try? await URLSessionOllamaHTTPClient().preload(config: config)
+        }
     }
 
     /// Re-reads settings.json after the Settings window saved it, so hotkey
