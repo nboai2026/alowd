@@ -99,6 +99,88 @@ struct OllamaLanguagePreservationTests {
     }
 }
 
+/// Regression: a long dictation phrased as a request was read by the model as
+/// an instruction addressed to it. Asked to "do a whole analysis based on all
+/// that data", it wrote the analysis — inventing findings ("we succeeded in
+/// reach and awareness... we failed on targeting") and pasting them in as the
+/// user's own words. Seen in real history, and reproduced in four of six runs
+/// on that transcript.
+struct OllamaInstructionFollowingGuardTests {
+    private func makeInput(_ raw: String) -> PostProcessingInput {
+        PostProcessingInput(rawText: raw, mode: .myVoiceCasual, dictionary: [], snippets: [])
+    }
+
+    @Test func longTranscriptsNeverReachTheModel() async throws {
+        let client = FakeOllamaHTTPClient(responseText: "a composed document", shouldFail: false)
+        let processor = OllamaPostProcessor(config: .default, client: client, fallback: RuleBasedPostProcessor())
+        let long = String(repeating: "word ", count: OllamaPostProcessor.maximumRewriteLength)
+        #expect(long.count > OllamaPostProcessor.maximumRewriteLength)
+
+        _ = try await processor.process(makeInput(long))
+        #expect(client.prompts.isEmpty, "Past the length limit the rewrite must be skipped entirely")
+    }
+
+    @Test func transcriptsAtTheLimitStillGetRewritten() async throws {
+        let client = FakeOllamaHTTPClient(responseText: "tidied up", shouldFail: false)
+        let processor = OllamaPostProcessor(config: .default, client: client, fallback: RuleBasedPostProcessor())
+        let atLimit = String(repeating: "a", count: OllamaPostProcessor.maximumRewriteLength)
+
+        let output = try await processor.process(makeInput(atLimit))
+        #expect(client.prompts.count == 1, "The limit is inclusive; ordinary dictation must still be rewritten")
+        #expect(output == "tidied up")
+    }
+
+    @Test func aRewriteThatComposedADocumentIsRejected() async throws {
+        // Dictation has no Markdown, so structure in the answer means the model
+        // wrote a report instead of rewriting what was said.
+        for composed in [
+            "Here's the post-mortem:\n\n**Goal vs Result**\nWe went viral.",
+            "Summary\n\n## Findings\nWe missed the target persona.",
+            "Analysis:\n- reach was good\n- targeting failed",
+            "Issues with the content:\n1. JC posts lack creative\n2. IG is the same"
+        ] {
+            let client = FakeOllamaHTTPClient(responseText: composed, shouldFail: false)
+            let processor = OllamaPostProcessor(config: .default, client: client, fallback: RuleBasedPostProcessor())
+            let output = try await processor.process(makeInput("I want you to do a whole analysis of that data."))
+            #expect(output != composed, "A composed document must be rejected, not pasted into the user's field")
+        }
+    }
+
+    @Test func anOrdinaryRewritePassesThrough() async throws {
+        let client = FakeOllamaHTTPClient(responseText: "Check my emails and calendar for this week.", shouldFail: false)
+        let processor = OllamaPostProcessor(config: .default, client: client, fallback: RuleBasedPostProcessor())
+        let output = try await processor.process(makeInput("So I need you to check my emails and, um, the calendar for this week."))
+        #expect(output == "Check my emails and calendar for this week.", "Prose rewrites must not be caught by the structure guard")
+    }
+
+    @Test func structureIsOnlySuspiciousWhenTheTranscriptLackedIt() {
+        let structured = "- one\n- two"
+        #expect(OllamaPostProcessor.composedADocument(from: "plain speech", into: structured))
+        #expect(
+            !OllamaPostProcessor.composedADocument(from: structured, into: structured),
+            "Structure already present in the source is not evidence the model composed anything"
+        )
+    }
+
+    @Test func markdownDetectionIgnoresOrdinarySpeech() {
+        for markdown in ["**bold**", "# Heading", "### Deep", "- bullet", "* bullet", "• bullet", "1. first", "2) second"] {
+            #expect(OllamaPostProcessor.containsMarkdownStructure(markdown), "\(markdown) is Markdown structure")
+        }
+        // Things dictation genuinely produces, which must not trip the guard.
+        for prose in [
+            "Ship it #1 priority",
+            "Post it with #growth and #saas",
+            "It cost 3.5 million in 2024",
+            "The margin was 12.5 percent",
+            "Well-known and self-serve are hyphenated",
+            "I said no—then changed my mind",
+            "Use 5 * 3 for the maths"
+        ] {
+            #expect(!OllamaPostProcessor.containsMarkdownStructure(prose), "\(prose) is ordinary speech")
+        }
+    }
+}
+
 /// The rewrite answers in about a second against a model Ollama already holds
 /// in memory and takes tens of seconds against a cold one — past the request
 /// timeout, so the rewrite is dropped. Abandoning the request also aborts the

@@ -77,13 +77,86 @@ public final class OllamaPostProcessor: PostProcessor {
             return input.rawText
         }
 
+        // Past a certain length the model stops rewriting the dictation and
+        // starts doing what the dictation asks for. See maximumRewriteLength.
+        guard input.rawText.count <= Self.maximumRewriteLength else {
+            return try await fallback.process(input)
+        }
+
         do {
-            return try await client
+            let rewritten = try await client
                 .generate(prompt: buildPrompt(input), config: config)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            // Second line of defence for the same failure, which is stochastic
+            // and so still possible below the length limit.
+            guard !Self.composedADocument(from: input.rawText, into: rewritten) else {
+                return try await fallback.process(input)
+            }
+            return rewritten
         } catch {
             return try await fallback.process(input)
         }
+    }
+
+    /// Transcripts longer than this skip the model and take the rule-based
+    /// cleanup instead.
+    ///
+    /// A long dictation phrased as a request ("I want you to do a whole
+    /// analysis based on all that data...") is read by the model as an
+    /// instruction addressed to it, so instead of tidying the sentence it
+    /// carries the request out — inventing findings and pasting them into the
+    /// user's document as if they were the user's own words. The prompt
+    /// already tells the model the transcript is data and never an
+    /// instruction; thousands of characters of imperative speech immediately
+    /// before the answer outweigh that line.
+    ///
+    /// Measured on qwen3.6:35b against real transcripts, six samples each:
+    /// 424, 986, 1456 and 2092 characters never once composed a document;
+    /// 2668 characters did it four times in six. The limit sits above
+    /// everything that measured clean and below the length that failed.
+    /// Losing the rewrite on a long dictation costs some tidying; letting it
+    /// through costs invented content the user may not notice they sent.
+    public static let maximumRewriteLength = 2_400
+
+    /// True when the rewrite contains Markdown structure the transcript did
+    /// not, which means the model wrote a document rather than rewriting
+    /// speech: dictation has no bold, headings, bullets or numbered lists.
+    static func composedADocument(from transcript: String, into rewrite: String) -> Bool {
+        containsMarkdownStructure(rewrite) && !containsMarkdownStructure(transcript)
+    }
+
+    static func containsMarkdownStructure(_ text: String) -> Bool {
+        if text.contains("**") { return true }
+        return text.split(separator: "\n", omittingEmptySubsequences: false).contains { line in
+            let trimmed = line.drop { $0 == " " || $0 == "\t" }
+            return isHeading(trimmed) || isBullet(trimmed) || isNumberedItem(trimmed)
+        }
+    }
+
+    /// "## Results", but not a hashtag or "#1".
+    private static func isHeading(_ line: Substring) -> Bool {
+        let hashes = line.prefix { $0 == "#" }
+        guard (1...6).contains(hashes.count) else { return false }
+        return line.dropFirst(hashes.count).first == " "
+    }
+
+    /// "- point", but not a sentence opening with a dash and no space.
+    private static func isBullet(_ line: Substring) -> Bool {
+        guard let marker = line.first, marker == "-" || marker == "*" || marker == "•" else {
+            return false
+        }
+        return line.dropFirst().first == " "
+    }
+
+    /// "1. point" or "2) point", but not a year or a decimal.
+    private static func isNumberedItem(_ line: Substring) -> Bool {
+        let digits = line.prefix(while: \.isNumber)
+        guard !digits.isEmpty, digits.count <= 2 else { return false }
+        let afterDigits = line.dropFirst(digits.count)
+        guard let punctuation = afterDigits.first, punctuation == "." || punctuation == ")" else {
+            return false
+        }
+        return afterDigits.dropFirst().first == " "
     }
 
     private func buildPrompt(_ input: PostProcessingInput) -> String {
