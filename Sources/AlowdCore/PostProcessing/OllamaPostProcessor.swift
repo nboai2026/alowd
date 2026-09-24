@@ -348,6 +348,13 @@ struct OllamaGenerateRequest: Codable {
 
 struct OllamaOptions: Codable {
     var num_predict = 900
+    /// Greedy, and no presence penalty. The model's own defaults (qwen3.6
+    /// ships temperature 1, presence_penalty 1.5) are tuned for chat, and a
+    /// presence penalty punishes repeating tokens — which is nearly all a
+    /// copy-edit does. Measured on 10 real transcripts: word retention 95.3%
+    /// (worst 66.7%) at the defaults, 98.5% (worst 94.1%) with these.
+    var temperature = 0.0
+    var presence_penalty = 0.0
 }
 
 private struct OllamaGenerateResponse: Codable {

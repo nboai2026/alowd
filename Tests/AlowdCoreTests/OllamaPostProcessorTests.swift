@@ -262,6 +262,16 @@ struct OllamaResidencyTests {
         #expect(json["stream"] as? Bool == false)
     }
 
+    @Test func generateRequestSamplesGreedilyWithoutPresencePenalty() throws {
+        // A presence penalty discourages repeating tokens, and a rewrite is
+        // mostly repeating the transcript: at the model's defaults it dropped
+        // up to a third of what was said.
+        let json = try encoded(OllamaGenerateRequest(model: "m", prompt: "p", stream: false, keep_alive: "30m"))
+        let options = try #require(json["options"] as? [String: Any])
+        #expect(options["temperature"] as? Double == 0)
+        #expect(options["presence_penalty"] as? Double == 0)
+    }
+
     @Test func preloadRequestLoadsTheModelWithoutGenerating() throws {
         // Ollama treats an empty prompt as a warm-up: it loads the weights and
         // answers `done_reason: "load"` rather than generating tokens.
