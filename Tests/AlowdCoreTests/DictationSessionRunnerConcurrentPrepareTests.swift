@@ -68,7 +68,13 @@ private final class ConcurrentStubEngine: TranscriptionEngine, LiveSampleTranscr
         TranscriptResult(text: "batch result", confidence: 1.0, language: nil)
     }
 
-    func transcribeLiveSamples(_ samples: [Float]) async throws -> String { "partial" }
+    func transcribeSegments(
+        _ samples: [Float],
+        languageHint: String?,
+        shouldContinue: @escaping @Sendable () -> Bool
+    ) async throws -> SegmentedTranscript {
+        SegmentedTranscript(segments: [TimedSegment(text: "partial", startSample: 0, endSample: samples.count)])
+    }
 }
 
 private final class ConcurrentFakeRecorder: TemporaryAudioRecorder, @unchecked Sendable {

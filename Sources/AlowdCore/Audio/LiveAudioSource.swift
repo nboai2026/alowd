@@ -68,44 +68,98 @@ public final class InputLevelBroadcaster: @unchecked Sendable {
     }
 }
 
-/// Thread-safe accumulator for live samples, capped to a trailing window so
-/// periodic partial transcription stays bounded on long dictations.
+/// Thread-safe store of everything captured in one recording, which the
+/// streaming transcriber decodes from as it arrives.
+///
+/// Holds the whole recording rather than a trailing window: streaming decodes
+/// start wherever the last confirmed segment ended, which can be any distance
+/// back. Also keeps one loudness value per 30 ms frame, so "is this stretch
+/// silence?" is a cheap question rather than a pass over the raw samples.
 public final class LiveSampleBuffer: @unchecked Sendable {
+    public static let frameLength = 480
+
     private let lock = NSLock()
     private var samples: [Float] = []
-    private var appendedTotal = 0
+    private var frameLevels: [Float] = []
+    private var overflowed = false
     private let maxSamples: Int
 
-    /// - Parameter maxSamples: trailing window size; defaults to 10s at 16kHz.
-    ///   The window is re-decoded on every tick, so a longer one mostly buys
-    ///   redundant work that competes with the final transcription.
-    public init(maxSamples: Int = 16_000 * 10) {
+    /// - Parameter maxSamples: recordings longer than this stop accumulating
+    ///   and report `overflowed`, so the caller can fall back to decoding the
+    ///   WAV. Defaults to 15 minutes at 16kHz (~58 MB).
+    public init(maxSamples: Int = 16_000 * 60 * 15) {
         self.maxSamples = maxSamples
     }
 
     public func append(_ chunk: [Float]) {
         guard !chunk.isEmpty else { return }
         lock.lock()
-        appendedTotal += chunk.count
-        samples.append(contentsOf: chunk)
-        if samples.count > maxSamples {
-            samples.removeFirst(samples.count - maxSamples)
+        defer { lock.unlock() }
+        guard !overflowed else { return }
+        guard samples.count + chunk.count <= maxSamples else {
+            overflowed = true
+            return
         }
-        lock.unlock()
+        samples.append(contentsOf: chunk)
+        // Only whole frames get a level; a partial last frame waits for more.
+        while (frameLevels.count + 1) * Self.frameLength <= samples.count {
+            let start = frameLevels.count * Self.frameLength
+            frameLevels.append(AudioLevelMeter.rms(Array(samples[start..<start + Self.frameLength])))
+        }
     }
 
-    /// Returns the trailing window plus a monotonic count of every sample ever
-    /// appended, so callers can tell whether new audio arrived since last time.
-    public func snapshot() -> (samples: [Float], appendedTotal: Int) {
+    public var count: Int {
         lock.lock()
         defer { lock.unlock() }
-        return (samples, appendedTotal)
+        return samples.count
+    }
+
+    /// True once the recording outgrew the buffer; its contents are then
+    /// incomplete and must not be used as the transcript's source.
+    public var hasOverflowed: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return overflowed
+    }
+
+    public func samples(from start: Int, to end: Int) -> [Float] {
+        lock.lock()
+        defer { lock.unlock() }
+        let end = min(end, samples.count)
+        guard start < end else { return [] }
+        return Array(samples[max(0, start)..<end])
+    }
+
+    /// Whether `start..<end` holds no speech, judged against this
+    /// recording's own speaking level so a quiet voice and a hot mic both work.
+    ///
+    /// A frame is speech when it is louder than `relativeThreshold` of the
+    /// recording's 90th-percentile frame level (and above an absolute floor,
+    /// so a recording that is all room noise is not "loud" against itself).
+    public func isSilent(
+        from start: Int,
+        to end: Int,
+        relativeThreshold: Float = 0.15,
+        absoluteFloor: Float = 0.004
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        // Only frames wholly inside the range: the frame straddling `start`
+        // usually holds the tail of the last word.
+        let firstFrame = (max(0, start) + Self.frameLength - 1) / Self.frameLength
+        let lastFrame = min(frameLevels.count, end / Self.frameLength)
+        guard firstFrame < lastFrame else { return true }
+        let sorted = frameLevels.sorted()
+        let speakingLevel = sorted[min(sorted.count - 1, sorted.count * 9 / 10)]
+        let threshold = max(absoluteFloor, speakingLevel * relativeThreshold)
+        return !frameLevels[firstFrame..<lastFrame].contains { $0 > threshold }
     }
 
     public func reset() {
         lock.lock()
         samples.removeAll()
-        appendedTotal = 0
+        frameLevels.removeAll()
+        overflowed = false
         lock.unlock()
     }
 }

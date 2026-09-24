@@ -222,6 +222,8 @@ public struct TranscriptRecord: Codable, Equatable, Identifiable, Sendable {
     /// Recorded audio length in seconds, when known. Optional so records
     /// written before this field existed keep decoding.
     public var audioDurationSeconds: TimeInterval?
+    /// Stop press to text pasted, in seconds: the latency the user waited.
+    public var stopToInsertSeconds: TimeInterval?
 
     public init(
         id: UUID = UUID(),
@@ -231,7 +233,8 @@ public struct TranscriptRecord: Codable, Equatable, Identifiable, Sendable {
         appBundleIdentifier: String? = nil,
         createdAt: Date = Date(),
         retainedAudioPath: String? = nil,
-        audioDurationSeconds: TimeInterval? = nil
+        audioDurationSeconds: TimeInterval? = nil,
+        stopToInsertSeconds: TimeInterval? = nil
     ) {
         self.id = id
         self.mode = mode
@@ -241,5 +244,6 @@ public struct TranscriptRecord: Codable, Equatable, Identifiable, Sendable {
         self.createdAt = createdAt
         self.retainedAudioPath = retainedAudioPath
         self.audioDurationSeconds = audioDurationSeconds
+        self.stopToInsertSeconds = stopToInsertSeconds
     }
 }

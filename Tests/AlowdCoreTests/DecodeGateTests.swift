@@ -43,27 +43,6 @@ struct DecodeGateTests {
         #expect(counter.maxConcurrent == 1, "Only one decode may touch the model at a time")
     }
 
-    @Test func runIfFreeSkipsWhileBusy() async throws {
-        let gate = DecodeGate()
-        let blocker = Task {
-            try await gate.run {
-                try await Task.sleep(for: .milliseconds(200))
-                return "batch"
-            }
-        }
-        try await Task.sleep(for: .milliseconds(40))
-
-        let skipped = try await gate.runIfFree { "live" }
-        #expect(skipped == nil, "A live partial must skip rather than queue behind the final decode")
-        _ = try await blocker.value
-    }
-
-    @Test func runIfFreeProceedsWhenIdle() async throws {
-        let gate = DecodeGate()
-        let result = try await gate.runIfFree { "live" }
-        #expect(result == "live", "A live partial must run when the model is idle")
-    }
-
     @Test func waitersResumeAfterAFailedRun() async throws {
         struct Boom: Error {}
         let gate = DecodeGate()

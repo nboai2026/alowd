@@ -89,7 +89,8 @@ public final class OllamaPostProcessor: PostProcessor {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             // Second line of defence for the same failure, which is stochastic
             // and so still possible below the length limit.
-            guard !Self.composedADocument(from: input.rawText, into: rewritten) else {
+            guard !Self.composedADocument(from: input.rawText, into: rewritten),
+                  !Self.answeredInsteadOfRewriting(input.rawText, with: rewritten) else {
                 return try await fallback.process(input)
             }
             return Self.replacingEmDashes(in: rewritten)
@@ -162,6 +163,15 @@ public final class OllamaPostProcessor: PostProcessor {
     /// speech: dictation has no bold, headings, bullets or numbered lists.
     static func composedADocument(from transcript: String, into rewrite: String) -> Bool {
         containsMarkdownStructure(rewrite) && !containsMarkdownStructure(transcript)
+    }
+
+    /// True when the "rewrite" is far longer than what was said: the model
+    /// replied to the dictation rather than tidying it. Cleaning up speech
+    /// only ever removes words, so twice the length plus a sentence's worth
+    /// of slack is well past anything a real rewrite produces. Most likely on
+    /// short inputs, which the incremental rewrite sends one sentence at a time.
+    static func answeredInsteadOfRewriting(_ transcript: String, with rewrite: String) -> Bool {
+        rewrite.count > transcript.count * 2 + 40
     }
 
     static func containsMarkdownStructure(_ text: String) -> Bool {

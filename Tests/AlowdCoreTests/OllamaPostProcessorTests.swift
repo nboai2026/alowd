@@ -262,6 +262,28 @@ struct OllamaResidencyTests {
         #expect(json["stream"] as? Bool == false)
     }
 
+    @Test func aReplyInsteadOfARewriteFallsBack() async throws {
+        // Handed one short sentence, a chat model may answer it. Cleaning up
+        // speech only removes words, so a much longer result is not a rewrite.
+        let reply = "Of course! Here is a detailed plan covering every step of the migration, with timelines and owners."
+        let client = FakeOllamaHTTPClient(responseText: reply, shouldFail: false)
+        let processor = OllamaPostProcessor(config: .default, client: client, fallback: RuleBasedPostProcessor())
+
+        let result = try await processor.process(PostProcessingInput(
+            rawText: "can you plan it",
+            mode: .myVoiceCasual,
+            dictionary: [],
+            snippets: []
+        ))
+
+        #expect(result == "can you plan it", "A reply must never be pasted as the user's words")
+    }
+
+    @Test func aNormalRewriteIsNotMistakenForAReply() {
+        #expect(!OllamaPostProcessor.answeredInsteadOfRewriting("um so ship it", with: "So, ship it."))
+        #expect(OllamaPostProcessor.answeredInsteadOfRewriting("ok", with: String(repeating: "word ", count: 20)))
+    }
+
     @Test func generateRequestSamplesGreedilyWithoutPresencePenalty() throws {
         // A presence penalty discourages repeating tokens, and a rewrite is
         // mostly repeating the transcript: at the model's defaults it dropped

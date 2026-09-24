@@ -145,7 +145,7 @@ final class DictationMenuModel: ObservableObject {
     /// settings reloads do not re-request the same load. See warmOllamaIfNeeded.
     private var warmedOllamaConfig: OllamaConfig?
 
-    /// Latest live partial transcript (display-only; batch result wins).
+    /// Latest partial transcript while recording.
     @Published private(set) var livePartialTranscript = ""
     /// Live microphone RMS level for a level/waveform indicator.
     @Published private(set) var inputLevel: Float = 0
@@ -204,8 +204,8 @@ final class DictationMenuModel: ObservableObject {
         // "never mind", not as a failed transcription of a header-only WAV.
         self.runner.minimumRecordingDuration = 0.4
         self.autoLearn = AutoLearnController(store: DictionaryStore(root: profileStore.root))
-        // Live partials are best effort and display-only; the runner starts
-        // and stops this alongside the recording it already owns.
+        // Streaming transcription: the runner starts and finishes it alongside
+        // the recording it already owns, and falls back to the file if needed.
         runner.liveTranscription = LiveTranscriptionController(
             source: recorder,
             engineProvider: { [weak self] in
@@ -723,7 +723,8 @@ final class DictationMenuModel: ObservableObject {
         return DictationPipeline(
             engine: engine,
             processor: processor,
-            inserter: ClipboardTextInserter()
+            inserter: ClipboardTextInserter(),
+            rewritesIncrementally: settings.enableOllamaRewrite
         )
     }
 }

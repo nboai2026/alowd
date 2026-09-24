@@ -90,21 +90,100 @@ struct DictationSessionRunnerLiveTests {
         #expect(first as AnyObject === second as AnyObject)
     }
 
+    // MARK: - Streaming
+
+    @Test func aStreamedTranscriptIsUsedWithoutDecodingTheFileAgain() async throws {
+        let live = FakeLiveTranscriptionController()
+        live.streamed = StreamedTranscript(text: "streamed result", language: "en")
+        let engine = CountingEngine(text: "batch result")
+        let runner = makeRunner(live: live, engine: engine)
+
+        _ = try runner.startRecording()
+        let finalText = try await runner.stopDictation(selectedMode: .raw)
+
+        #expect(finalText == "streamed result")
+        #expect(engine.callCount == 0, "Re-decoding the whole recording after stop is the wait this removes")
+        #expect(runner.lastDetectedLanguage == "en")
+    }
+
+    @Test func anUntrustworthyStreamFallsBackToTheRecordedFile() async throws {
+        let live = FakeLiveTranscriptionController()
+        live.streamed = nil
+        let engine = CountingEngine(text: "batch result")
+        let runner = makeRunner(live: live, engine: engine)
+
+        _ = try runner.startRecording()
+        let finalText = try await runner.stopDictation(selectedMode: .raw)
+
+        #expect(finalText == "batch result")
+        #expect(engine.callCount == 1)
+        #expect(live.finishCount == 1)
+    }
+
+    @Test func finalSentencesAreRewrittenWhileTheUserIsStillTalking() async throws {
+        let first = "This first sentence is comfortably long enough to stand alone."
+        let second = "And the second one is long enough to stand on its own too."
+        let live = FakeLiveTranscriptionController()
+        live.streamed = StreamedTranscript(text: "\(first) \(second)", language: nil)
+        let processor = RecordingProcessor()
+        let runner = makeRunner(live: live, processor: processor, rewritesIncrementally: true)
+        _ = try await runner.prepareLiveSampleTranscriber()
+
+        _ = try runner.startRecording()
+        live.emit(update: StreamingTranscriptUpdate(
+            confirmedText: "\(first) \(second)",
+            text: "\(first) \(second)",
+            endsInSilence: false,
+            language: nil
+        ))
+        for _ in 0..<200 where processor.inputs.isEmpty {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(processor.inputs == [first], "Only closed chunks are rewritten before a pause")
+
+        let finalText = try await runner.stopDictation(selectedMode: .myVoiceCasual)
+
+        #expect(finalText == "[\(first)] [\(second)]")
+        #expect(processor.inputs == [first, second], "Stop only pays for the chunk not yet rewritten")
+        let timing = try #require(runner.lastTiming)
+        #expect(timing.stopToInsertSeconds != nil, "The wait after stop must be measured")
+    }
+
+    @Test func historyIsStillWrittenWhenThePasteFails() async throws {
+        let history = RecordingHistoryWriter()
+        let runner = makeRunner(live: nil, history: history, inserter: FailingInserter())
+
+        _ = try runner.startRecording()
+        await #expect(throws: TextInserterError.self) {
+            try await runner.stopDictation(selectedMode: .raw)
+        }
+
+        #expect(history.records.map(\.finalText) == ["batch result"], "A failed paste must never lose the transcript")
+    }
+
     // MARK: - Fixtures
 
-    private func makeRunner(live: FakeLiveTranscriptionController?) -> DictationSessionRunner {
+    private func makeRunner(
+        live: FakeLiveTranscriptionController?,
+        engine: TranscriptionEngine = StubTranscriptionEngine(text: "batch result"),
+        processor: PostProcessor = RuleBasedPostProcessor(),
+        rewritesIncrementally: Bool = false,
+        history: TranscriptHistoryWriting = LiveFakeHistoryWriter(),
+        inserter: TextInserter = LiveFakeTextInserter()
+    ) -> DictationSessionRunner {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("alowd-live-tests-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let runner = DictationSessionRunner(
             recorder: LiveFakeRecorder(audioFile: root.appendingPathComponent("dictation.wav")),
             profile: LiveFakeProfileReader(),
-            history: LiveFakeHistoryWriter(),
+            history: history,
             pipelineFactory: { _ in
                 DictationPipeline(
-                    engine: StubTranscriptionEngine(text: "batch result"),
-                    processor: RuleBasedPostProcessor(),
-                    inserter: LiveFakeTextInserter()
+                    engine: engine,
+                    processor: processor,
+                    inserter: inserter,
+                    rewritesIncrementally: rewritesIncrementally
                 )
             }
         )
@@ -137,7 +216,13 @@ private final class LiveCapableStubEngine: TranscriptionEngine, LiveSampleTransc
         TranscriptResult(text: "batch result", confidence: 1.0, language: nil)
     }
 
-    func transcribeLiveSamples(_ samples: [Float]) async throws -> String { "partial" }
+    func transcribeSegments(
+        _ samples: [Float],
+        languageHint: String?,
+        shouldContinue: @escaping @Sendable () -> Bool
+    ) async throws -> SegmentedTranscript {
+        SegmentedTranscript(segments: [TimedSegment(text: "partial", startSample: 0, endSample: samples.count)])
+    }
 }
 
 private final class CountingPipelineFactory: @unchecked Sendable {
@@ -164,21 +249,38 @@ private final class CountingPipelineFactory: @unchecked Sendable {
 final class FakeLiveTranscriptionController: LiveTranscriptionControlling {
     private(set) var startCount = 0
     private(set) var stopCount = 0
+    private(set) var finishCount = 0
+    /// What `finish` hands back; nil sends the runner to the batch path.
+    var streamed: StreamedTranscript?
     private var onPartial: (@MainActor @Sendable (String) -> Void)?
+    private var onUpdate: (@MainActor @Sendable (StreamingTranscriptUpdate) -> Void)?
 
-    func start(onPartial: @escaping @MainActor @Sendable (String) -> Void) {
+    func start(
+        onPartial: @escaping @MainActor @Sendable (String) -> Void,
+        onUpdate: @escaping @MainActor @Sendable (StreamingTranscriptUpdate) -> Void
+    ) {
         startCount += 1
         self.onPartial = onPartial
+        self.onUpdate = onUpdate
+    }
+
+    func finish() async -> StreamedTranscript? {
+        finishCount += 1
+        return streamed
     }
 
     func stop() {
         stopCount += 1
     }
 
-    /// Simulates the throttled decode loop delivering a partial. Deliberately
-    /// left wired after stop() so tests can prove the runner drops stragglers.
+    /// Simulates the decode loop delivering a partial. Deliberately left
+    /// wired after stop() so tests can prove the runner drops stragglers.
     func emit(_ partial: String) {
         onPartial?(partial)
+    }
+
+    func emit(update: StreamingTranscriptUpdate) {
+        onUpdate?(update)
     }
 }
 
@@ -219,4 +321,27 @@ private final class LiveFakeHistoryWriter: TranscriptHistoryWriting, @unchecked 
 
 private final class LiveFakeTextInserter: TextInserter, @unchecked Sendable {
     func insert(_ text: String) throws {}
+}
+
+private final class CountingEngine: TranscriptionEngine, @unchecked Sendable {
+    private let text: String
+    private(set) var callCount = 0
+
+    init(text: String) {
+        self.text = text
+    }
+
+    func transcribe(audioFile: URL) async throws -> TranscriptResult {
+        callCount += 1
+        return TranscriptResult(text: text, confidence: 1.0)
+    }
+}
+
+private final class RecordingHistoryWriter: TranscriptHistoryWriting, @unchecked Sendable {
+    private(set) var records: [TranscriptRecord] = []
+    func append(_ record: TranscriptRecord) throws { records.append(record) }
+}
+
+private final class FailingInserter: TextInserter, @unchecked Sendable {
+    func insert(_ text: String) throws { throw TextInserterError.accessibilityNotGranted }
 }

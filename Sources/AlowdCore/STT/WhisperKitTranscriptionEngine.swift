@@ -127,36 +127,53 @@ public final class WhisperKitTranscriptionEngine: TranscriptionEngine, @unchecke
 }
 
 extension WhisperKitTranscriptionEngine: LiveSampleTranscribing {
-    /// Live partial decode path: same engine, same language/translate options,
-    /// fed raw 16kHz mono samples accumulated during recording.
-    public func transcribeLiveSamples(_ samples: [Float]) async throws -> String {
+    /// Streaming decode path: same engine, same language/translate options,
+    /// fed the 16kHz mono samples captured since the last confirmed segment.
+    public func transcribeSegments(
+        _ samples: [Float],
+        languageHint: String?,
+        shouldContinue: @escaping @Sendable () -> Bool
+    ) async throws -> SegmentedTranscript {
         let whisperKit = self.whisperKit
-        // Reuse the language the last final decode resolved rather than paying
-        // for a detection pass per partial — and rather than letting WhisperKit
-        // detect internally, which is the path that returns "en" for French.
-        // Before the first final decode there is nothing to reuse, so partials
-        // fall back to internal detection and may flash a wrong language.
-        //
-        // Deliberate trade-off: switch language mid-session and partials keep
-        // showing the previous one until the next final decode resolves it.
-        // That is worth it — carrying over a language detected at ~99.9%
-        // confidence is wrong only when the user switches, whereas the internal
-        // path was wrong on every French recording measured. The batch result
-        // is what actually gets inserted either way.
-        let options = decodingOptions(
-            language: language ?? lastResolvedLanguage,
-            detectLanguage: language == nil && lastResolvedLanguage == nil
-        )
-        // Skipped rather than queued when the final decode holds the model:
-        // a partial that waited its turn is stale, and the batch result is
-        // what actually gets inserted.
-        let text = try await gate.runIfFree {
+        let configured = self.language
+        return try await gate.run { [self] in
+            guard shouldContinue() else { throw CancellationError() }
+            var decodeLanguage = configured ?? languageHint
+            var trusted = decodeLanguage != nil
+            // Auto-detect with nothing resolved yet this session: detect in a
+            // pass of our own, for the reason `transcribe(audioFile:)` does.
+            if decodeLanguage == nil {
+                let detected = (try? await whisperKit.detectLangauge(audioArray: samples)).map {
+                    DetectedLanguage(code: $0.language, logProb: $0.langProbs[$0.language] ?? -.infinity)
+                }
+                (decodeLanguage, trusted) = Self.resolveLanguage(
+                    configured: nil,
+                    detected: detected,
+                    lastResolved: lastResolvedLanguage
+                )
+                if trusted { lastResolvedLanguage = decodeLanguage }
+            }
+            var options = decodingOptions(language: decodeLanguage, detectLanguage: decodeLanguage == nil)
+            // Segment text without <|0.00|> timestamp and control tokens.
+            options.skipSpecialTokens = true
             let results: [TranscriptionResult] = try await whisperKit.transcribe(
                 audioArray: samples,
-                decodeOptions: options
+                decodeOptions: options,
+                // Returning false is WhisperKit's early stop.
+                callback: { _ in shouldContinue() ? nil : false }
             )
-            return results.map(\.text).joined(separator: " ")
+            guard shouldContinue() else { throw CancellationError() }
+            let sampleRate = Float(WhisperKit.sampleRate)
+            return SegmentedTranscript(
+                segments: results.flatMap(\.segments).map { segment in
+                    TimedSegment(
+                        text: segment.text,
+                        startSample: Int(segment.start * sampleRate),
+                        endSample: Int(segment.end * sampleRate)
+                    )
+                },
+                language: trusted ? decodeLanguage : nil
+            )
         }
-        return text ?? ""
     }
 }

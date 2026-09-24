@@ -63,6 +63,13 @@ public final class DictationSessionRunner {
     /// of starting a second one. See `makePipeline`.
     private var pipelineBuild: (key: PipelineCacheKey, task: Task<DictationPipeline, Error>)?
     private var recordingStartedAt: Date?
+    /// What this recording will be rewritten with, loaded at start so chunks
+    /// can be rewritten while the user is still talking.
+    private var sessionRewriteInputs: RewriteInputs?
+    /// This session's rewriter, reused at stop when nothing it depends on changed.
+    private var sessionRewriter: (inputs: RewriteInputs, language: String?, pipeline: DictationPipeline, rewriter: IncrementalRewriter)?
+    /// The newest streaming progress, so stop can start on it immediately.
+    private var latestUpdate: StreamingTranscriptUpdate?
     public private(set) var state: State = .idle
     /// Stage timings from the most recent completed dictation.
     public private(set) var lastTiming: DictationTiming?
@@ -76,11 +83,11 @@ public final class DictationSessionRunner {
     /// disables the guard; the app sets the threshold it wants.
     public var minimumRecordingDuration: TimeInterval = 0
 
-    /// Optional best-effort live partials path. Display-only: its failures
-    /// never affect the dictation, and the batch pipeline result below stays
-    /// the source of truth for the inserted text.
+    /// Streams the recording through the engine while the user speaks, so
+    /// stop only has the last moment left to transcribe. Optional: without it,
+    /// or whenever it has nothing trustworthy, the recorded file is decoded.
     public var liveTranscription: LiveTranscriptionControlling?
-    /// Receives throttled partial transcript strings while recording.
+    /// Receives partial transcript strings while recording.
     public var onPartialTranscript: ((String) -> Void)?
 
     /// The cached pipeline's engine when it supports live sample decoding, so
@@ -124,17 +131,82 @@ public final class DictationSessionRunner {
         let audioFile = try recorder.beginTemporaryRecording()
         state = .recording
         recordingStartedAt = now()
-        liveTranscription?.start { [weak self] partial in
-            guard let self, self.state == .recording else { return }
-            self.onPartialTranscript?(partial)
-        }
+        sessionRewriter = nil
+        latestUpdate = nil
+        sessionRewriteInputs = try? RewriteInputs(
+            mode: profile.loadSettings().defaultMode,
+            dictionary: profile.loadDictionary(),
+            snippets: profile.loadSnippets()
+        )
+        liveTranscription?.start(
+            onPartial: { [weak self] partial in
+                guard let self, self.state == .recording else { return }
+                self.onPartialTranscript?(partial)
+            },
+            onUpdate: { [weak self] update in
+                guard let self, self.state == .recording else { return }
+                self.prefetchRewrites(for: update)
+            }
+        )
         return audioFile
+    }
+
+    /// Starts rewriting the parts of the transcript that are already final,
+    /// so that stopping leaves only the last sentence for the model. When the
+    /// speaker has paused, the unfinished last chunk is rewritten too, on the
+    /// bet that they are about to stop; if they carry on instead, it is
+    /// cancelled at stop.
+    private func prefetchRewrites(for update: StreamingTranscriptUpdate) {
+        latestUpdate = update
+        guard let inputs = sessionRewriteInputs,
+              let rewriter = rewriter(for: inputs, language: update.language) else { return }
+        let chunks = update.endsInSilence
+            ? RewriteChunker.chunks(update.text)
+            : RewriteChunker.closedChunks(update.confirmedText)
+        guard !chunks.isEmpty else { return }
+        Task { await rewriter.prefetch(chunks, speculative: update.endsInSilence) }
+    }
+
+    /// At stop, the sentences the latest decode already finished will almost
+    /// always survive the final one unchanged, so their rewrites can overlap
+    /// the tail decode instead of waiting behind it. After a pause the latest
+    /// text is the whole transcript, and its guessed last chunk is kept.
+    private func prefetchRewritesAtStop() {
+        guard let update = latestUpdate,
+              let inputs = sessionRewriteInputs,
+              let rewriter = rewriter(for: inputs, language: update.language) else { return }
+        let chunks = update.endsInSilence
+            ? RewriteChunker.chunks(update.text)
+            : RewriteChunker.closedChunks(update.text)
+        guard !chunks.isEmpty else { return }
+        Task { await rewriter.prefetch(chunks, speculative: update.endsInSilence) }
+    }
+
+    private func rewriter(for inputs: RewriteInputs, language: String?) -> IncrementalRewriter? {
+        guard inputs.mode != .raw,
+              let pipeline = cachedPipeline?.pipeline,
+              pipeline.rewritesIncrementally else { return nil }
+        if let sessionRewriter,
+           sessionRewriter.inputs == inputs,
+           sessionRewriter.language == language,
+           sessionRewriter.pipeline === pipeline {
+            return sessionRewriter.rewriter
+        }
+        let rewriter = IncrementalRewriter(
+            processor: pipeline.processor,
+            mode: inputs.mode,
+            dictionary: inputs.dictionary,
+            snippets: inputs.snippets,
+            language: language
+        )
+        sessionRewriter = (inputs, language, pipeline, rewriter)
+        return rewriter
     }
 
     @discardableResult
     public func stopDictation(selectedMode: WritingMode?) async throws -> String {
         guard state == .recording else { throw DictationSessionRunnerError.notRecording }
-        liveTranscription?.stop()
+        let stoppedAt = Date()
         state = .transcribing
         defer {
             if state == .transcribing {
@@ -143,7 +215,13 @@ public final class DictationSessionRunner {
         }
 
         // The recorder released the finished file; the runner now owns it.
-        let audioFile = try recorder.finishTemporaryRecording()
+        let audioFile: URL
+        do {
+            audioFile = try recorder.finishTemporaryRecording()
+        } catch {
+            liveTranscription?.stop()
+            throw error
+        }
         var shouldDeleteTemporaryAudio = true
         defer {
             if shouldDeleteTemporaryAudio {
@@ -154,9 +232,16 @@ public final class DictationSessionRunner {
         if let startedAt = recordingStartedAt,
            now().timeIntervalSince(startedAt) < minimumRecordingDuration {
             recordingStartedAt = nil
+            liveTranscription?.stop()
             throw DictationSessionRunnerError.recordingTooShort
         }
         recordingStartedAt = nil
+
+        // Capture has stopped, so streaming now has every sample. Usually it
+        // has already transcribed nearly all of them.
+        prefetchRewritesAtStop()
+        let streamed = await liveTranscription?.finish()
+        liveTranscription?.stop()
 
         let settings = try profile.loadSettings()
         let dictionary = try profile.loadDictionary()
@@ -182,32 +267,60 @@ public final class DictationSessionRunner {
 
         let audioDuration = Self.audioDuration(of: transcriptionAudioFile)
 
-        let ((rawText, finalText), timing, detectedLanguage) = try await pipeline.produceTextTimed(
-            audioFile: transcriptionAudioFile,
+        // Streaming is the fast path; the recorded file is the fallback when
+        // streaming had nothing trustworthy (engine still loading, a failed
+        // tail decode, a recording longer than the live buffer).
+        try Task.checkCancellation()
+        let transcribeStart = Date()
+        let transcript: TranscriptResult
+        if let streamed {
+            transcript = TranscriptResult(text: streamed.text, confidence: 1.0, language: streamed.language)
+        } else {
+            transcript = try await pipeline.engine.transcribe(audioFile: transcriptionAudioFile)
+        }
+        try Task.checkCancellation()
+        let processStart = Date()
+        let inputs = RewriteInputs(mode: mode, dictionary: dictionary, snippets: snippets)
+        let finalText = try await pipeline.process(
+            transcript,
             mode: mode,
             dictionary: dictionary,
-            snippets: snippets
+            snippets: snippets,
+            rewriter: rewriter(for: inputs, language: transcript.language)
+        )
+        let timing = DictationTiming(
+            transcribeSeconds: processStart.timeIntervalSince(transcribeStart),
+            postProcessSeconds: Date().timeIntervalSince(processStart)
         )
         lastTiming = timing
-        lastDetectedLanguage = detectedLanguage
+        lastDetectedLanguage = transcript.language
 
         // A cancelled dictation is discarded entirely — the user asked for it
         // to be thrown away, so it must not linger in history either.
         try Task.checkCancellation()
 
-        // Record history before insertion so an insertion failure never loses
-        // the transcript. History persistence itself is best effort.
-        try? history.append(TranscriptRecord(
+        var record = TranscriptRecord(
             mode: mode,
-            rawText: rawText,
+            rawText: transcript.text,
             finalText: finalText,
             appBundleIdentifier: frontmostAppBundleIdentifier(),
             retainedAudioPath: retainedAudioURL?.path,
             audioDurationSeconds: audioDuration
-        ))
-
-        try Task.checkCancellation()
-        try pipeline.insert(finalText)
+        )
+        // History is written after pasting, since rewriting the whole history
+        // file is not something the user should wait for. It is still written
+        // when the paste fails, so the transcript is never lost; persistence
+        // itself stays best effort.
+        do {
+            try pipeline.insert(finalText)
+        } catch {
+            try? history.append(record)
+            throw error
+        }
+        let stopToInsert = Date().timeIntervalSince(stoppedAt)
+        lastTiming = timing.withStopToInsert(stopToInsert)
+        record.stopToInsertSeconds = stopToInsert
+        try? history.append(record)
         return finalText
     }
 
@@ -269,8 +382,16 @@ public final class DictationSessionRunner {
 
     public func cancelRecording() {
         liveTranscription?.stop()
+        sessionRewriter = nil
         recordingStartedAt = nil
         state = .idle
         try? recorder.discardTemporaryRecording()
     }
+}
+
+/// Everything besides the text that decides what a rewrite produces.
+private struct RewriteInputs: Equatable {
+    let mode: WritingMode
+    let dictionary: [DictionaryTerm]
+    let snippets: [Snippet]
 }

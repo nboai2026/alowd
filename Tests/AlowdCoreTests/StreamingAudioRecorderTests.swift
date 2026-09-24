@@ -134,30 +134,49 @@ struct InputLevelBroadcasterTests {
 }
 
 struct LiveSampleBufferTests {
-    @Test func accumulatesAndReportsMonotonicTotal() {
+    @Test func keepsTheWholeRecordingForSlicing() {
         let buffer = LiveSampleBuffer(maxSamples: 10)
         buffer.append([1, 2, 3])
         buffer.append([4, 5])
-        let (samples, total) = buffer.snapshot()
-        #expect(samples == [1, 2, 3, 4, 5])
-        #expect(total == 5)
+        #expect(buffer.count == 5)
+        #expect(buffer.samples(from: 1, to: 4) == [2, 3, 4])
+        #expect(buffer.samples(from: 3, to: 99) == [4, 5], "A range past the end is clamped")
+        #expect(buffer.samples(from: 5, to: 5).isEmpty)
     }
 
-    @Test func trimsToTrailingWindowButKeepsTotalGrowing() {
+    @Test func overflowStopsAccumulatingAndIsReported() {
         let buffer = LiveSampleBuffer(maxSamples: 4)
         buffer.append([1, 2, 3])
+        #expect(!buffer.hasOverflowed)
         buffer.append([4, 5, 6])
-        let (samples, total) = buffer.snapshot()
-        #expect(samples == [3, 4, 5, 6], "Buffer must keep only the trailing window")
-        #expect(total == 6, "Appended total must keep growing past the cap")
+        #expect(buffer.hasOverflowed, "Streaming must know its copy of the recording is incomplete")
+        #expect(buffer.count == 3, "Nothing past the cap is kept")
     }
 
-    @Test func resetClearsSamplesAndTotal() {
+    @Test func silenceIsJudgedAgainstTheRecordingsOwnSpeakingLevel() {
+        let frame = LiveSampleBuffer.frameLength
         let buffer = LiveSampleBuffer()
-        buffer.append([1, 2])
+        buffer.append([Float](repeating: 0.3, count: frame * 20))   // speech
+        buffer.append([Float](repeating: 0.01, count: frame * 10))  // room noise
+        #expect(!buffer.isSilent(from: 0, to: frame * 20))
+        #expect(buffer.isSilent(from: frame * 20, to: frame * 30), "Noise far below the speaking level is silence")
+        #expect(!buffer.isSilent(from: frame * 15, to: frame * 30), "Any speech in the range makes it not silent")
+    }
+
+    @Test func quietVoiceStillCountsAsSpeech() {
+        let frame = LiveSampleBuffer.frameLength
+        let buffer = LiveSampleBuffer()
+        buffer.append([Float](repeating: 0.03, count: frame * 20))
+        buffer.append([Float](repeating: 0, count: frame * 10))
+        #expect(!buffer.isSilent(from: 0, to: frame * 20), "A quiet speaker is measured against their own level")
+        #expect(buffer.isSilent(from: frame * 20, to: frame * 30))
+    }
+
+    @Test func resetClearsEverything() {
+        let buffer = LiveSampleBuffer(maxSamples: 2)
+        buffer.append([1, 2, 3])
         buffer.reset()
-        let (samples, total) = buffer.snapshot()
-        #expect(samples.isEmpty)
-        #expect(total == 0)
+        #expect(buffer.count == 0)
+        #expect(!buffer.hasOverflowed)
     }
 }

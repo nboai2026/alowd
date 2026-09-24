@@ -2,133 +2,253 @@ import Foundation
 import Testing
 @testable import AlowdCore
 
+struct StreamingTranscriptStateTests {
+    private func segment(_ text: String, _ start: Int, _ end: Int) -> TimedSegment {
+        TimedSegment(text: text, startSample: start, endSample: end)
+    }
+
+    @Test func confirmsEverySegmentButTheLast() {
+        var state = StreamingTranscriptState()
+        state.apply(
+            [segment(" One.", 0, 10_000), segment(" Two.", 10_000, 20_000), segment(" Thr", 20_000, 38_000)],
+            decodedFrom: 0, through: 40_000, isFinal: false
+        )
+        #expect(state.confirmed == ["One.", "Two."])
+        #expect(state.pending == ["Thr"])
+        #expect(state.confirmedEnd == 20_000, "The next decode starts where the last confirmed segment ended")
+        #expect(state.text == "One. Two. Thr")
+    }
+
+    @Test func positionsAreAbsoluteAcrossDecodes() {
+        var state = StreamingTranscriptState()
+        state.apply([segment("A.", 0, 10_000), segment("B", 10_000, 30_000)], decodedFrom: 0, through: 32_000, isFinal: false)
+        state.apply([segment("B.", 0, 12_000), segment("C", 12_000, 30_000)], decodedFrom: 10_000, through: 48_000, isFinal: false)
+        #expect(state.confirmed == ["A.", "B."])
+        #expect(state.confirmedEnd == 22_000)
+        #expect(state.decodedThrough == 48_000)
+    }
+
+    @Test func neverConfirmsASegmentEndingAtTheEdgeOfTheAudio() {
+        // A segment that ends right where the captured audio ends may be a
+        // word cut off mid-syllable; the next decode sees the rest of it.
+        var state = StreamingTranscriptState()
+        let end = 40_000
+        state.apply(
+            [segment("One.", 0, 10_000), segment("Tw", 10_000, end - StreamingTranscriptState.edgeGuardSamples + 1), segment("o", 35_000, end)],
+            decodedFrom: 0, through: end, isFinal: false
+        )
+        #expect(state.confirmed == ["One."])
+        #expect(state.pending == ["Tw", "o"])
+    }
+
+    @Test func aFinalDecodeConfirmsEverything() {
+        var state = StreamingTranscriptState()
+        state.apply([segment("One.", 0, 10_000), segment("Two.", 10_000, 15_900)], decodedFrom: 0, through: 16_000, isFinal: true)
+        #expect(state.confirmed == ["One.", "Two."])
+        #expect(state.pending.isEmpty)
+        #expect(state.confirmedEnd == 16_000)
+    }
+
+    @Test func confirmingPendingKeepsItsText() {
+        var state = StreamingTranscriptState()
+        state.apply([segment("One.", 0, 10_000), segment("Two.", 10_000, 30_000)], decodedFrom: 0, through: 32_000, isFinal: false)
+        state.confirmPending(through: 40_000)
+        #expect(state.confirmed == ["One.", "Two."])
+        #expect(state.text == "One. Two.")
+    }
+
+    @Test func blankSegmentsAreDropped() {
+        var state = StreamingTranscriptState()
+        state.apply([segment("  ", 0, 5_000), segment("Hi.", 5_000, 9_000)], decodedFrom: 0, through: 10_000, isFinal: true)
+        #expect(state.text == "Hi.")
+    }
+}
+
 @MainActor
 struct LiveTranscriptionControllerTests {
-    @Test func forwardsThrottledPartialsFromLiveSamples() async throws {
-        let source = FakeLiveAudioSource()
-        let transcriber = FakeSampleTranscriber(texts: ["hello", "hello world"])
-        let controller = LiveTranscriptionController(
+    /// 2s of speech, then further speech or silence, as the tests need.
+    private let speech = [Float](repeating: 0.3, count: 32_000)
+
+    /// Scripted by how much audio each decode is handed, so every ordering of
+    /// the decode loop and `finish` reaches the same transcript:
+    /// - the first 2s decode as "A." (confirmed) and "B." (at the edge, pending);
+    /// - from A's end with 1s more speech: "B." (confirmed) and "C." (pending);
+    /// - from B's end: "C.";
+    /// - all 3s at once (nothing confirmed yet): all three.
+    private func scriptedTranscriber(failFirst: Int = 0) -> FakeSegmentTranscriber {
+        FakeSegmentTranscriber(failuresBeforeSuccess: failFirst) { samples in
+            switch samples.count {
+            case 32_000: [.init(text: " A.", startSample: 0, endSample: 12_000), .init(text: " B.", startSample: 12_000, endSample: 30_000)]
+            case 36_000: [.init(text: " B.", startSample: 0, endSample: 18_000), .init(text: " C.", startSample: 18_000, endSample: 34_000)]
+            case 18_000: [.init(text: " C.", startSample: 0, endSample: 16_000)]
+            case 48_000: [
+                .init(text: " A.", startSample: 0, endSample: 12_000),
+                .init(text: " B.", startSample: 12_000, endSample: 30_000),
+                .init(text: " C.", startSample: 30_000, endSample: 46_000),
+            ]
+            default: []
+            }
+        }
+    }
+
+    private func makeController(
+        source: FakeLiveAudioSource,
+        transcriber: FakeSegmentTranscriber?
+    ) -> LiveTranscriptionController {
+        LiveTranscriptionController(
             source: source,
-            engineProvider: { transcriber },
-            interval: 0.01,
-            minimumSampleCount: 100
+            engineProvider: {
+                guard let transcriber else { throw LiveTestFailure() }
+                return transcriber
+            },
+            pollInterval: 0.005,
+            minimumNewSamples: 1_000,
+            minimumSampleCount: 1_000
         )
-        let partials = PartialCollector()
+    }
+
+    @Test func streamsPartialsAsTheRecordingArrives() async throws {
+        let source = FakeLiveAudioSource()
+        let transcriber = scriptedTranscriber()
+        let controller = makeController(source: source, transcriber: transcriber)
+        let partials = Collector<String>()
 
         controller.start { partials.append($0) }
         #expect(source.consumer != nil, "Start must subscribe to the live sample feed")
+        source.push(samples: speech)
+        try await waitUntil("the first partial arrives") { !partials.values.isEmpty }
 
-        source.push(samples: [Float](repeating: 0.1, count: 200))
-        try await waitUntil("first partial arrives") { partials.values.count >= 1 }
-        source.push(samples: [Float](repeating: 0.1, count: 200))
-        try await waitUntil("second partial arrives") { partials.values.count >= 2 }
+        #expect(partials.values.first == "A. B.", "A partial is the confirmed text plus the unconfirmed tail")
+        controller.stop()
+    }
 
-        #expect(partials.values.prefix(2) == ["hello", "hello world"], "Partials must be forwarded in order")
+    @Test func eachDecodeStartsAtTheLastConfirmedSegment() async throws {
+        let source = FakeLiveAudioSource()
+        let transcriber = scriptedTranscriber()
+        let controller = makeController(source: source, transcriber: transcriber)
+        let partials = Collector<String>()
+
+        controller.start { partials.append($0) }
+        source.push(samples: speech)
+        try await waitUntil("the first decode lands") { partials.values.count == 1 }
+        source.push(samples: [Float](repeating: 0.3, count: 16_000))
+        try await waitUntil("the second decode lands") { partials.values.count == 2 }
+
+        #expect(transcriber.receivedCounts.prefix(2) == [32_000, 36_000], "Confirmed audio is never decoded twice")
+        #expect(partials.values.last == "A. B. C.")
+        controller.stop()
+    }
+
+    @Test func finishingAfterAPauseReusesTheLastDecode() async throws {
+        let source = FakeLiveAudioSource()
+        let transcriber = scriptedTranscriber()
+        let controller = makeController(source: source, transcriber: transcriber)
+        let updates = Collector<StreamingTranscriptUpdate>()
+
+        controller.start(onPartial: { _ in }, onUpdate: { updates.append($0) })
+        source.push(samples: speech)
+        try await waitUntil("the first decode lands") { !updates.values.isEmpty }
+        source.push(samples: [Float](repeating: 0, count: 16_000))
+        try await waitUntil("the pause is reported") { updates.values.contains(where: \.endsInSilence) }
+
+        let pause = try #require(updates.values.last)
+        #expect(pause.text == "A. B.", "A pause reports exactly what stopping now would produce")
+        let result = await controller.finish()
+
+        #expect(result?.text == "A. B.")
+        #expect(transcriber.receivedCounts == [32_000], "Stopping after a pause must not decode anything more")
+        controller.stop()
+    }
+
+    @Test func finishingMidSpeechDecodesOnlyTheTail() async throws {
+        let source = FakeLiveAudioSource()
+        let transcriber = scriptedTranscriber()
+        let controller = makeController(source: source, transcriber: transcriber)
+        let partials = Collector<String>()
+
+        controller.start { partials.append($0) }
+        source.push(samples: speech)
+        try await waitUntil("the first decode lands") { !partials.values.isEmpty }
+        source.push(samples: [Float](repeating: 0.3, count: 16_000))
+        let result = await controller.finish()
+
+        #expect(result?.text == "A. B. C.")
+        #expect(
+            transcriber.receivedCounts.allSatisfy { $0 < 48_000 },
+            "Stop must never re-decode the whole recording: \(transcriber.receivedCounts)"
+        )
+        controller.stop()
+    }
+
+    @Test func finishWithoutAnEngineFallsBackToTheFile() async throws {
+        let source = FakeLiveAudioSource()
+        let controller = makeController(source: source, transcriber: nil)
+
+        controller.start { _ in }
+        source.push(samples: speech)
+        #expect(await controller.finish() == nil, "No engine means nothing trustworthy; the caller decodes the WAV")
+    }
+
+    @Test func aFailedTailDecodeFallsBackToTheFile() async throws {
+        let source = FakeLiveAudioSource()
+        let transcriber = FakeSegmentTranscriber { _ in throw LiveTestFailure() }
+        let controller = makeController(source: source, transcriber: transcriber)
+
+        controller.start { _ in }
+        source.push(samples: speech)
+        #expect(await controller.finish() == nil)
+    }
+
+    @Test func finishingBeforeStartingReturnsNothing() async {
+        let controller = makeController(source: FakeLiveAudioSource(), transcriber: scriptedTranscriber())
+        #expect(await controller.finish() == nil)
+    }
+
+    @Test func decodeFailuresWhileRecordingAreRetriedWithMoreAudio() async throws {
+        let source = FakeLiveAudioSource()
+        let transcriber = scriptedTranscriber(failFirst: 1)
+        let controller = makeController(source: source, transcriber: transcriber)
+        let partials = Collector<String>()
+
+        controller.start { partials.append($0) }
+        source.push(samples: speech)
+        try await waitUntil("the failed decode is attempted") { transcriber.callCount == 1 }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(transcriber.callCount == 1, "A failure is not retried until new audio arrives")
+
+        source.push(samples: [Float](repeating: 0.3, count: 16_000))
+        try await waitUntil("a later decode succeeds") { !partials.values.isEmpty }
+        #expect(partials.values.first == "A. B. C.", "Nothing was confirmed by the failure, so the retry covers everything")
         controller.stop()
     }
 
     @Test func doesNotDecodeWhenNoNewAudioArrived() async throws {
         let source = FakeLiveAudioSource()
-        let transcriber = FakeSampleTranscriber(texts: ["only once"])
-        let controller = LiveTranscriptionController(
-            source: source,
-            engineProvider: { transcriber },
-            interval: 0.01,
-            minimumSampleCount: 100
-        )
-        let partials = PartialCollector()
+        let transcriber = scriptedTranscriber()
+        let controller = makeController(source: source, transcriber: transcriber)
+        let partials = Collector<String>()
 
         controller.start { partials.append($0) }
-        source.push(samples: [Float](repeating: 0.1, count: 200))
+        source.push(samples: speech)
         try await waitUntil("the single partial arrives") { partials.values.count == 1 }
-
-        // No new samples: several throttle ticks later there is still exactly
-        // one decode and one partial.
         try await Task.sleep(nanoseconds: 100_000_000)
+
         #expect(transcriber.callCount == 1, "Controller must not re-decode unchanged audio")
-        #expect(partials.values == ["only once"], "No new partial without new audio")
-        controller.stop()
-    }
-
-    @Test func engineProviderFailureIsSilent() async throws {
-        let source = FakeLiveAudioSource()
-        let controller = LiveTranscriptionController(
-            source: source,
-            engineProvider: { throw LiveTestFailure() },
-            interval: 0.01,
-            minimumSampleCount: 100
-        )
-        let partials = PartialCollector()
-
-        controller.start { partials.append($0) }
-        source.push(samples: [Float](repeating: 0.1, count: 200))
-        try await Task.sleep(nanoseconds: 100_000_000)
-
-        #expect(partials.values.isEmpty, "A failed engine load must silently produce no partials")
-        controller.stop()
-    }
-
-    @Test func decodeFailuresAreSkippedSilently() async throws {
-        let source = FakeLiveAudioSource()
-        let transcriber = FakeSampleTranscriber(texts: ["recovered"], failuresBeforeSuccess: 2)
-        let controller = LiveTranscriptionController(
-            source: source,
-            engineProvider: { transcriber },
-            interval: 0.01,
-            minimumSampleCount: 100
-        )
-        let partials = PartialCollector()
-
-        controller.start { partials.append($0) }
-        for _ in 0..<3 {
-            source.push(samples: [Float](repeating: 0.1, count: 200))
-            try await Task.sleep(nanoseconds: 30_000_000)
-        }
-        try await waitUntil("partial arrives after decode failures") { !partials.values.isEmpty }
-
-        #expect(partials.values.first == "recovered", "Decode failures must be skipped, not surfaced")
         controller.stop()
     }
 
     @Test func stopUnsubscribesAndStopsEmitting() async throws {
         let source = FakeLiveAudioSource()
-        let transcriber = FakeSampleTranscriber(texts: ["late"])
-        let controller = LiveTranscriptionController(
-            source: source,
-            engineProvider: { transcriber },
-            interval: 0.01,
-            minimumSampleCount: 100
-        )
-        let partials = PartialCollector()
+        let controller = makeController(source: source, transcriber: scriptedTranscriber())
+        let partials = Collector<String>()
 
         controller.start { partials.append($0) }
         controller.stop()
 
         #expect(source.consumer == nil, "Stop must clear the live sample consumer")
-        source.push(samples: [Float](repeating: 0.1, count: 200))
+        source.push(samples: speech)
         try await Task.sleep(nanoseconds: 80_000_000)
         #expect(partials.values.isEmpty, "No partials may be emitted after stop")
-    }
-
-    @Test func blankTranscriptsAreNotForwarded() async throws {
-        let source = FakeLiveAudioSource()
-        let transcriber = FakeSampleTranscriber(texts: ["   ", "real text"])
-        let controller = LiveTranscriptionController(
-            source: source,
-            engineProvider: { transcriber },
-            interval: 0.01,
-            minimumSampleCount: 100
-        )
-        let partials = PartialCollector()
-
-        controller.start { partials.append($0) }
-        source.push(samples: [Float](repeating: 0.1, count: 200))
-        try await Task.sleep(nanoseconds: 50_000_000)
-        source.push(samples: [Float](repeating: 0.1, count: 200))
-        try await waitUntil("non-blank partial arrives") { !partials.values.isEmpty }
-
-        #expect(partials.values == ["real text"], "Whitespace-only partials must be dropped")
-        controller.stop()
     }
 }
 
@@ -152,11 +272,11 @@ private func waitUntil(
     }
 }
 
-/// MainActor-confined list of received partials.
+/// MainActor-confined list of received values.
 @MainActor
-private final class PartialCollector {
-    private(set) var values: [String] = []
-    func append(_ value: String) { values.append(value) }
+private final class Collector<Value> {
+    private(set) var values: [Value] = []
+    func append(_ value: Value) { values.append(value) }
 }
 
 final class FakeLiveAudioSource: LiveAudioSource, @unchecked Sendable {
@@ -185,38 +305,39 @@ final class FakeLiveAudioSource: LiveAudioSource, @unchecked Sendable {
     }
 }
 
-final class FakeSampleTranscriber: LiveSampleTranscribing, @unchecked Sendable {
+/// Answers each decode from a script keyed on the audio it is handed, and
+/// records how much audio that was.
+final class FakeSegmentTranscriber: LiveSampleTranscribing, @unchecked Sendable {
     private let lock = NSLock()
-    private let texts: [String]
+    private let respond: @Sendable ([Float]) throws -> [TimedSegment]
     private var remainingFailures: Int
-    private var successCount = 0
-    private var _callCount = 0
+    private var _receivedCounts: [Int] = []
 
-    var callCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return _callCount
-    }
-
-    init(texts: [String], failuresBeforeSuccess: Int = 0) {
-        self.texts = texts
+    init(failuresBeforeSuccess: Int = 0, respond: @escaping @Sendable ([Float]) throws -> [TimedSegment]) {
         self.remainingFailures = failuresBeforeSuccess
+        self.respond = respond
     }
 
-    func transcribeLiveSamples(_ samples: [Float]) async throws -> String {
-        try nextResult()
-    }
-
-    private func nextResult() throws -> String {
+    var receivedCounts: [Int] {
         lock.lock()
         defer { lock.unlock() }
-        _callCount += 1
-        if remainingFailures > 0 {
+        return _receivedCounts
+    }
+
+    var callCount: Int { receivedCounts.count }
+
+    func transcribeSegments(
+        _ samples: [Float],
+        languageHint: String?,
+        shouldContinue: @escaping @Sendable () -> Bool
+    ) async throws -> SegmentedTranscript {
+        let shouldFail: Bool = lock.withLock {
+            _receivedCounts.append(samples.count)
+            guard remainingFailures > 0 else { return false }
             remainingFailures -= 1
-            throw LiveTestFailure()
+            return true
         }
-        let index = min(successCount, texts.count - 1)
-        successCount += 1
-        return texts[index]
+        if shouldFail { throw LiveTestFailure() }
+        return SegmentedTranscript(segments: try respond(samples), language: "en")
     }
 }
