@@ -67,10 +67,27 @@ struct WhisperKitModelManagerTests {
     @Test func variantStatusFindsLargeV3TurboSnapshot() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        try makeCompleteModel(in: root, folderName: "openai_whisper-large-v3_turbo")
+        try makeCompleteModel(in: root, folderName: "openai_whisper-large-v3-v20240930_turbo")
 
         let status = WhisperKitModelManager.status(in: root, variant: .largeV3Turbo)
         #expect(status.state == .ready, "The large-v3-turbo snapshot folder must be recognized")
+    }
+
+    /// Regression: "Large v3 Turbo" resolved to Argmax's `large-v3_turbo`, the
+    /// full 32-layer large-v3, which decoded several times slower than Turbo.
+    @Test func largeV3TurboIsNotTheThirtyTwoLayerSnapshot() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try makeCompleteModel(in: root, folderName: "openai_whisper-large-v3_turbo")
+
+        #expect(
+            WhisperKitModelManager.status(in: root, variant: .largeV3Turbo).state == .missing,
+            "Argmax's large-v3_turbo is full large-v3 and must not satisfy the Turbo entry"
+        )
+        #expect(
+            WhisperKitModelManager.status(in: root, variant: .largeV3).state == .ready,
+            "It stays usable as the explicit Large v3 entry"
+        )
     }
 
     @Test func variantStatusRequiresTokenizer() throws {

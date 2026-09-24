@@ -44,11 +44,26 @@ public struct WhisperKitModelVariant: Equatable, Sendable, Identifiable {
     public static let small = WhisperKitModelVariant(
         id: "small", displayName: "Small (balanced, ~500 MB)", whisperKitName: "small"
     )
+    /// OpenAI's Turbo model: large-v3's encoder with a 4-layer decoder.
+    ///
+    /// Not Argmax's "large-v3_turbo", despite the name. There `_turbo` names
+    /// Argmax's own pipeline optimization of the full 32-layer large-v3, and
+    /// this id used to point at it. Measured on an M5 Pro, that decoder runs
+    /// at 18 tok/s and took 6.9s to transcribe 31s of speech; this one takes
+    /// 2.2s with the same word error rate.
+    ///
+    /// The full-precision build rather than Argmax's 626 MB one: its encoder
+    /// runs in 0.35s per window against 0.62s for the palettized one, and the
+    /// encoder is most of what a short streaming tail decode costs.
     public static let largeV3Turbo = WhisperKitModelVariant(
-        id: "large-v3-turbo", displayName: "Large v3 Turbo (best, ~1.6 GB)", whisperKitName: "large-v3_turbo"
+        id: "large-v3-turbo", displayName: "Large v3 Turbo (best, ~1.6 GB)", whisperKitName: "large-v3-v20240930_turbo"
+    )
+    /// Full large-v3 — the model the Turbo entry used to install.
+    public static let largeV3 = WhisperKitModelVariant(
+        id: "large-v3", displayName: "Large v3 (slow, ~3 GB)", whisperKitName: "large-v3_turbo"
     )
 
-    public static let supported: [WhisperKitModelVariant] = [.base, .small, .largeV3Turbo]
+    public static let supported: [WhisperKitModelVariant] = [.base, .small, .largeV3Turbo, .largeV3]
 
     /// Resolves a settings value to a known variant, falling back to base so an
     /// edited settings.json never leaves the app without a usable variant.
