@@ -78,7 +78,10 @@ public struct WhisperKitModelVariant: Equatable, Sendable, Identifiable {
 }
 
 public enum WhisperKitModelManager {
-    public static let recommendedVariant = "base"
+    /// What a new profile uses and "Install Recommended" downloads. Turbo is
+    /// both the accurate choice and, since transcription streams while you
+    /// speak, fast enough that base no longer buys a shorter wait.
+    public static let recommendedVariant = WhisperKitModelVariant.largeV3Turbo.id
 
     /// Variant-aware status: only an installed snapshot of this exact variant
     /// (not just any model under the root) counts as ready.
@@ -178,7 +181,7 @@ public enum WhisperKitModelManager {
         in root: URL,
         progress: @escaping @Sendable (Double?) -> Void = { _ in }
     ) async throws -> URL {
-        try await install(variant: .base, in: root, progress: progress)
+        try await install(variant: .named(recommendedVariant), in: root, progress: progress)
     }
 
     @discardableResult

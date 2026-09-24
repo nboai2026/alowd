@@ -65,7 +65,11 @@ struct AlowdModelsTests {
 
     @Test func emptySettingsObjectDecodesToDefaults() throws {
         let settings = try JSONDecoder().decode(AppSettings.self, from: Data("{}".utf8))
-        #expect(settings == AppSettings.default, "A settings file with no keys must decode to the defaults")
+        var expected = AppSettings.default
+        // The one deliberate exception: no model key means a pre-picker file,
+        // whose owner has base installed, not the new default.
+        expected.modelVariant = "base"
+        #expect(settings == expected, "A settings file with no keys must decode to the defaults")
     }
 
     @Test func legacySettingsWithoutV2FieldsStillLoad() throws {

@@ -99,6 +99,13 @@ struct WhisperKitModelManagerTests {
         #expect(status.state == .incomplete, "A snapshot without a tokenizer must report incomplete")
     }
 
+    @Test func aNewProfileUsesTurboAndInstallRecommendedFetchesIt() {
+        // The menu's "Install Recommended" installs the profile's variant, so
+        // a new install used to get base without anyone choosing it.
+        #expect(WhisperKitModelManager.recommendedVariant == WhisperKitModelVariant.largeV3Turbo.id)
+        #expect(AppSettings.default.modelVariant == WhisperKitModelVariant.largeV3Turbo.id)
+    }
+
     @Test func unknownVariantNameFallsBackToBase() {
         #expect(WhisperKitModelVariant.named("no-such-model") == .base, "Unknown settings values must fall back to base")
         #expect(WhisperKitModelVariant.named("large-v3-turbo") == .largeV3Turbo, "Known ids must resolve exactly")

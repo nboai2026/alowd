@@ -22,13 +22,14 @@ Alowd is free, open source, and fully offline — and it still does the thing th
 ## Features
 
 - **Dictate anywhere** — a global hotkey inserts text into whichever app has focus. Toggle mode or hold-to-talk.
+- **Fast** — transcription and cleanup run while you are still speaking, so text usually lands within a second or two of stopping, however long you talked.
 - **Live overlay** — a floating pill shows input levels and a live partial transcript while you speak, so you always know it is listening.
 - **Learns your vocabulary** — after inserting, Alowd checks whether you corrected a word, and offers to remember it. Names, jargon, file paths, product names. Every suggestion is reviewed by you before it is kept.
 - **Personal dictionary** — add words and phrases by hand, define misspelling → correction rules, import/export CSV.
 - **History dashboard** — every dictation, grouped by day, searchable, with word count and streak stats. Nothing you dictate is ever lost, even if pasting fails.
 - **Writing modes** — raw, casual, professional, or agent-prompt (which preserves paths, commands, and identifiers verbatim).
 - **Any language** — Whisper is multilingual. English, French, Spanish, Portuguese and German are in the picker (auto-detect too); dictate in your language and get it back, or have it translate to English as you speak. Auto-detect can misjudge short or noisy clips — pick the language explicitly if you always speak the same one.
-- **Model picker** — from `base` (fast) to `large-v3-turbo` (most accurate).
+- **Model picker** — Large v3 Turbo by default (most accurate), down to `base` for older Macs.
 - **Optional local rewrite** — if you run [Ollama](https://ollama.com), Alowd can clean up transcripts with a local LLM. Localhost only; falls back instantly if it is slow or unavailable.
 
 ## Install
@@ -36,14 +37,36 @@ Alowd is free, open source, and fully offline — and it still does the thing th
 Requires macOS 14+ (Apple Silicon strongly recommended) and Xcode 16+ to build.
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/alowd.git
+git clone https://github.com/nboai2026/alowd.git
 cd alowd
 Scripts/package-app.sh
 ```
 
 Drag `dist/Alowd.app` to `/Applications` and launch it. Alowd lives in your menu bar; the default hotkey is `Control` + `Option` + `Space`.
 
-On first launch, pick **Install Recommended WhisperKit Model** from the menu and wait for the status to say it is ready. This one-time download from `huggingface.co` is the only network request Alowd ever makes.
+On first launch, pick **Install Recommended WhisperKit Model** from the menu and wait for the status to say it is ready. It downloads Large v3 Turbo (about 1.6 GB) from `huggingface.co`, once. That is the only network request Alowd ever makes. The first dictation after installing (or rebuilding) takes a few minutes while macOS compiles the model for the Neural Engine; after that it is fast.
+
+### Recommended setup
+
+What the fast, cleaned-up experience needs beyond the install above:
+
+1. **Grant permissions** when asked: Microphone, and Accessibility (so Alowd can paste).
+2. **Transcription model:** Large v3 Turbo, which "Install Recommended" already gives you. On an older or 8 GB Mac, pick Small or Base in Settings → Model instead.
+3. **Cleanup (optional, recommended):** install [Ollama](https://ollama.com) and pull a model that fits your Mac's memory. Then, in Settings → Ollama rewrite, turn on **Rewrite with local Ollama** and put the model's name in **Model**:
+
+   | Your Mac's memory | Model | Notes |
+   |---|---|---|
+   | 48 GB or more | `qwen3.6:35b` | Best cleanup: keeps your wording and removes fillers and false starts. Uses ~23 GB. |
+   | 16–32 GB | `qwen3:4b-instruct-2507-q4_K_M` | Faster, edits a little more aggressively. Uses ~3 GB. |
+
+   ```bash
+   ollama pull qwen3:4b-instruct-2507-q4_K_M
+   ```
+
+   Not `qwen3:4b`: that one is a thinking model that never gets to the answer. Without Ollama, Alowd still removes "um"/"uh" with simple rules.
+4. **Mode:** "My voice casual" for everyday writing, "Prompt" when dictating to an AI agent (keeps paths and commands exact).
+
+Laptops dictate noticeably slower on battery with Low Power Mode on, which throttles the GPU and Neural Engine.
 
 <details>
 <summary>Running from source, and notes on unsigned builds</summary>
@@ -93,7 +116,7 @@ Wispr Flow is a genuinely good product and the inspiration for this one; it is a
 
 ## Contributing
 
-Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). The codebase is small and layered: `Sources/AlowdCore` holds all logic behind protocol seams with fakes in tests, and `Sources/AlowdApp` is SwiftUI plus the composition root. `swift test` runs 136 tests and should stay green.
+Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). The codebase is small and layered: `Sources/AlowdCore` holds all logic behind protocol seams with fakes in tests, and `Sources/AlowdApp` is SwiftUI plus the composition root. `swift test` runs 221 tests and should stay green. `docs/stt-benchmark.md` explains `AlowdBench`, which measures how long you wait after stopping.
 
 ## Credits
 

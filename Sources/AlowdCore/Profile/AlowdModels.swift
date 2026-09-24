@@ -80,7 +80,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         profileDirectory: URL(fileURLWithPath: NSString(string: "~/Alowd").expandingTildeInPath),
         language: nil,
         translateToEnglish: false,
-        modelVariant: "base",
+        modelVariant: WhisperKitModelManager.recommendedVariant,
         hotkeyMode: .toggle,
         historyRetentionDays: nil,
         showOverlay: true,
@@ -99,7 +99,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         profileDirectory: URL,
         language: String? = nil,
         translateToEnglish: Bool = false,
-        modelVariant: String = "base",
+        modelVariant: String = WhisperKitModelManager.recommendedVariant,
         hotkeyMode: HotkeyMode = .toggle,
         historyRetentionDays: Int? = nil,
         showOverlay: Bool = true,
@@ -168,8 +168,12 @@ public struct AppSettings: Codable, Equatable, Sendable {
             ?? defaults.language
         translateToEnglish = try container.decodeIfPresent(Bool.self, forKey: .translateToEnglish)
             ?? defaults.translateToEnglish
+        // Not `defaults.modelVariant`: a settings file without this key
+        // predates the model picker, and base is the model its owner actually
+        // has installed. Switching them to the new default would break
+        // dictation until they downloaded it.
         modelVariant = try container.decodeIfPresent(String.self, forKey: .modelVariant)
-            ?? defaults.modelVariant
+            ?? WhisperKitModelVariant.base.id
         hotkeyMode = try container.decodeIfPresent(HotkeyMode.self, forKey: .hotkeyMode)
             ?? defaults.hotkeyMode
         historyRetentionDays = try container.decodeIfPresent(Int.self, forKey: .historyRetentionDays)
