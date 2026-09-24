@@ -22,6 +22,13 @@ let package = Package(
             name: "AlowdApp",
             dependencies: ["AlowdCore"]
         ),
+        .executableTarget(
+            name: "AlowdBench",
+            dependencies: [
+                "AlowdCore",
+                .product(name: "WhisperKit", package: "argmax-oss-swift")
+            ]
+        ),
         .testTarget(
             name: "AlowdCoreTests",
             dependencies: ["AlowdCore"]
