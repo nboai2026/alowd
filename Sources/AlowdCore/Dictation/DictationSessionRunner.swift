@@ -70,6 +70,9 @@ public final class DictationSessionRunner {
     private var sessionRewriter: (inputs: RewriteInputs, language: String?, pipeline: DictationPipeline, rewriter: IncrementalRewriter)?
     /// The newest streaming progress, so stop can start on it immediately.
     private var latestUpdate: StreamingTranscriptUpdate?
+    /// Bumped per recording, so a stop that resumes after the user cancelled
+    /// and started again cannot reach into the newer recording's stream.
+    private var session = 0
     public private(set) var state: State = .idle
     /// Stage timings from the most recent completed dictation.
     public private(set) var lastTiming: DictationTiming?
@@ -128,9 +131,7 @@ public final class DictationSessionRunner {
     public func startRecording() throws -> URL {
         guard state == .idle else { throw DictationSessionRunnerError.sessionAlreadyActive }
         try profile.bootstrap()
-        let audioFile = try recorder.beginTemporaryRecording()
-        state = .recording
-        recordingStartedAt = now()
+        session += 1
         sessionRewriter = nil
         latestUpdate = nil
         sessionRewriteInputs = try? RewriteInputs(
@@ -138,6 +139,10 @@ public final class DictationSessionRunner {
             dictionary: profile.loadDictionary(),
             snippets: profile.loadSnippets()
         )
+        // Streaming must be listening before the microphone starts: its
+        // transcript is what gets pasted, and a buffer captured before it
+        // subscribes is in the WAV but never in the paste. Push-to-talk users
+        // start speaking the instant the key goes down.
         liveTranscription?.start(
             onPartial: { [weak self] partial in
                 guard let self, self.state == .recording else { return }
@@ -148,6 +153,15 @@ public final class DictationSessionRunner {
                 self.prefetchRewrites(for: update)
             }
         )
+        let audioFile: URL
+        do {
+            audioFile = try recorder.beginTemporaryRecording()
+        } catch {
+            liveTranscription?.stop()
+            throw error
+        }
+        state = .recording
+        recordingStartedAt = now()
         return audioFile
     }
 
@@ -207,6 +221,7 @@ public final class DictationSessionRunner {
     public func stopDictation(selectedMode: WritingMode?) async throws -> String {
         guard state == .recording else { throw DictationSessionRunnerError.notRecording }
         let stoppedAt = Date()
+        let stoppingSession = session
         state = .transcribing
         defer {
             if state == .transcribing {
@@ -241,6 +256,9 @@ public final class DictationSessionRunner {
         // has already transcribed nearly all of them.
         prefetchRewritesAtStop()
         let streamed = await liveTranscription?.finish()
+        // Cancelled while finishing, and possibly already recording again:
+        // the stream now belongs to the newer recording.
+        try ensureStillCurrent(stoppingSession)
         liveTranscription?.stop()
 
         let settings = try profile.loadSettings()
@@ -270,15 +288,17 @@ public final class DictationSessionRunner {
         // Streaming is the fast path; the recorded file is the fallback when
         // streaming had nothing trustworthy (engine still loading, a failed
         // tail decode, a recording longer than the live buffer).
-        try Task.checkCancellation()
-        let transcribeStart = Date()
+        try ensureStillCurrent(stoppingSession)
+        // Counted from the stop press, so the tail decode inside `finish`
+        // is part of the transcription time rather than invisible.
+        let transcribeStart = stoppedAt
         let transcript: TranscriptResult
         if let streamed {
             transcript = TranscriptResult(text: streamed.text, confidence: 1.0, language: streamed.language)
         } else {
             transcript = try await pipeline.engine.transcribe(audioFile: transcriptionAudioFile)
         }
-        try Task.checkCancellation()
+        try ensureStillCurrent(stoppingSession)
         let processStart = Date()
         let inputs = RewriteInputs(mode: mode, dictionary: dictionary, snippets: snippets)
         let finalText = try await pipeline.process(
@@ -297,7 +317,7 @@ public final class DictationSessionRunner {
 
         // A cancelled dictation is discarded entirely — the user asked for it
         // to be thrown away, so it must not linger in history either.
-        try Task.checkCancellation()
+        try ensureStillCurrent(stoppingSession)
 
         var record = TranscriptRecord(
             mode: mode,
@@ -322,6 +342,14 @@ public final class DictationSessionRunner {
         record.stopToInsertSeconds = stopToInsert
         try? history.append(record)
         return finalText
+    }
+
+    /// Throws when the dictation was cancelled at any await along the way,
+    /// whether the task was cancelled or the runner was told directly: a
+    /// cancelled recording must never be transcribed into the next one's app.
+    private func ensureStillCurrent(_ stoppingSession: Int) throws {
+        try Task.checkCancellation()
+        guard session == stoppingSession else { throw CancellationError() }
     }
 
     /// Reuses the cached pipeline (and its loaded WhisperKit engine) until a
@@ -382,6 +410,7 @@ public final class DictationSessionRunner {
 
     public func cancelRecording() {
         liveTranscription?.stop()
+        session += 1
         sessionRewriter = nil
         recordingStartedAt = nil
         state = .idle

@@ -237,6 +237,29 @@ struct LiveTranscriptionControllerTests {
         controller.stop()
     }
 
+    /// Regression (Codex review): a finish that resumes after the user
+    /// cancelled and started again cleared the newer session's task, so the
+    /// newer recording lost streaming and fell back to the file.
+    @Test func aStaleFinishLeavesTheNewerSessionAlone() async throws {
+        let source = FakeLiveAudioSource()
+        let transcriber = FakeSegmentTranscriber { samples in
+            Thread.sleep(forTimeInterval: 0.15)
+            return [.init(text: " A.", startSample: 0, endSample: samples.count / 2)]
+        }
+        let controller = makeController(source: source, transcriber: transcriber)
+
+        controller.start { _ in }
+        source.push(samples: speech)
+        try await waitUntil("a decode is in flight") { transcriber.callCount == 1 }
+        async let stale = controller.finish()
+        try await Task.sleep(nanoseconds: 10_000_000)
+        controller.start { _ in }  // cancelled, recording again
+        #expect(await stale == nil)
+
+        source.push(samples: speech)
+        #expect(await controller.finish()?.text == "A.", "The newer session must still stream")
+    }
+
     @Test func stopUnsubscribesAndStopsEmitting() async throws {
         let source = FakeLiveAudioSource()
         let controller = makeController(source: source, transcriber: scriptedTranscriber())

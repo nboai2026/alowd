@@ -11,13 +11,17 @@ public enum RewriteChunker {
     /// never reaches the model on its own. Handed a bare interjection, a chat
     /// model tends to reply to it rather than rewrite it.
     public static let minimumChunkLength = 60
+    /// A run this long with no sentence end closes at the next comma or
+    /// semicolon, so one unpunctuated ramble can't become a last chunk that
+    /// takes several seconds to rewrite after stop.
+    public static let maximumChunkLength = 240
 
     public static func chunks(_ text: String) -> [String] {
         var chunks: [String] = []
         var current = ""
         for sentence in sentences(text) {
             current = current.isEmpty ? sentence : current + " " + sentence
-            if current.count >= minimumChunkLength {
+            if current.count >= minimumChunkLength, sentence.last.map({ ".!?…,;".contains($0) }) ?? false {
                 chunks.append(current)
                 current = ""
             }
@@ -35,12 +39,16 @@ public enum RewriteChunker {
 
     /// Words up to and including one ending in terminal punctuation. Whisper
     /// punctuates its output, so this is where the speaker's sentences end.
+    /// Past `maximumChunkLength` a comma or semicolon ends one too. Each
+    /// decision depends only on the words before it, which is what keeps the
+    /// split prefix-stable.
     static func sentences(_ text: String) -> [String] {
         var sentences: [String] = []
         var current = ""
         for word in text.split(whereSeparator: \.isWhitespace) {
             current = current.isEmpty ? String(word) : current + " " + word
-            if let last = word.last, ".!?…".contains(last) {
+            guard let last = word.last else { continue }
+            if ".!?…".contains(last) || (",;".contains(last) && current.count >= maximumChunkLength) {
                 sentences.append(current)
                 current = ""
             }
@@ -75,6 +83,10 @@ public actor IncrementalRewriter {
     /// cancels it, so a guess never holds up the queue once it is wrong.
     private var speculative: Set<String> = []
     private var queueTail: Task<Void, Never>?
+    /// Set once the final rewrite starts. From then on a prefetch still in
+    /// flight from recording must not cancel anything: the final rewrite may
+    /// be awaiting exactly the chunk it would cancel.
+    private var isFinishing = false
 
     public init(
         processor: PostProcessor,
@@ -95,6 +107,7 @@ public actor IncrementalRewriter {
     /// - Parameter speculative: the last chunk is a guess that may still grow;
     ///   it is dropped as soon as a later prefetch disagrees.
     public func prefetch(_ chunks: [String], speculative isSpeculative: Bool = false) {
+        guard !isFinishing else { return }
         let wanted = Set(chunks)
         for chunk in speculative where !wanted.contains(chunk) {
             rewrites.removeValue(forKey: chunk)?.cancel()
@@ -121,24 +134,33 @@ public actor IncrementalRewriter {
         }
         speculative.removeAll()
         prefetch(chunks)
+        isFinishing = true
         var parts: [String] = []
         for chunk in chunks {
             guard let task = rewrites[chunk] else { continue }
-            parts.append(try await task.value)
+            do {
+                parts.append(try await task.value)
+            } catch where !Task.isCancelled {
+                // The chunk's own request was cancelled or failed; the
+                // dictation itself was not, and must not be lost for it.
+                // Retried through the queue, which keeps requests one at a time.
+                rewrites[chunk] = nil
+                enqueue(chunk)
+                guard let retry = rewrites[chunk] else { continue }
+                parts.append(try await retry.value)
+            }
         }
         return parts.joined(separator: " ")
+    }
+
+    private func input(for chunk: String) -> PostProcessingInput {
+        PostProcessingInput(rawText: chunk, mode: mode, dictionary: dictionary, snippets: snippets, language: language)
     }
 
     private func enqueue(_ chunk: String) {
         let previous = queueTail
         let processor = self.processor
-        let input = PostProcessingInput(
-            rawText: chunk,
-            mode: mode,
-            dictionary: dictionary,
-            snippets: snippets,
-            language: language
-        )
+        let input = input(for: chunk)
         let task = Task { () throws -> String in
             await previous?.value
             try Task.checkCancellation()

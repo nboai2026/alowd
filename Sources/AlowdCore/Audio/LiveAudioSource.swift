@@ -131,28 +131,33 @@ public final class LiveSampleBuffer: @unchecked Sendable {
     }
 
     /// Whether `start..<end` holds no speech, judged against this
-    /// recording's own speaking level so a quiet voice and a hot mic both work.
+    /// recording's own levels so a quiet voice and a hot mic both work.
     ///
     /// A frame is speech when it is louder than `relativeThreshold` of the
-    /// recording's 90th-percentile frame level (and above an absolute floor,
-    /// so a recording that is all room noise is not "loud" against itself).
-    public func isSilent(
-        from start: Int,
-        to end: Int,
-        relativeThreshold: Float = 0.15,
-        absoluteFloor: Float = 0.004
-    ) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
+    /// recording's speaking level (90th-percentile frame) and clearly above
+    /// its noise floor (2nd percentile). There is deliberately no absolute
+    /// floor: a quiet voice on a quiet mic can sit below any fixed level and
+    /// would be thrown away as silence. The threshold is also capped well
+    /// below the speaking level: in speech with barely a pause the "noise
+    /// floor" is itself speech, and uncapped it would silence everything.
+    public func isSilent(from start: Int, to end: Int, relativeThreshold: Float = 0.15) -> Bool {
         // Only frames wholly inside the range: the frame straddling `start`
         // usually holds the tail of the last word.
         let firstFrame = (max(0, start) + Self.frameLength - 1) / Self.frameLength
+        lock.lock()
         let lastFrame = min(frameLevels.count, end / Self.frameLength)
-        guard firstFrame < lastFrame else { return true }
-        let sorted = frameLevels.sorted()
+        guard firstFrame < lastFrame else {
+            lock.unlock()
+            return true
+        }
+        let levels = frameLevels
+        lock.unlock()
+        // Sorted outside the lock: the capture thread appends under it.
+        let sorted = levels.sorted()
+        let noiseFloor = sorted[sorted.count / 50]
         let speakingLevel = sorted[min(sorted.count - 1, sorted.count * 9 / 10)]
-        let threshold = max(absoluteFloor, speakingLevel * relativeThreshold)
-        return !frameLevels[firstFrame..<lastFrame].contains { $0 > threshold }
+        let threshold = min(max(noiseFloor * 3, speakingLevel * relativeThreshold), speakingLevel * 0.25)
+        return !levels[firstFrame..<lastFrame].contains { $0 > threshold }
     }
 
     public func reset() {

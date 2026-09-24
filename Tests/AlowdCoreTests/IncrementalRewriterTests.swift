@@ -22,7 +22,9 @@ struct RewriteChunkerTests {
         // the user was talking must be exactly a chunk of the final text.
         let final = "Um so the first thing I wanted to say is that the build is green again. "
             + "The second thing is that we should ship on Thursday. Right. "
-            + "And then the last thing is the docs, which still mention the old flag, and that needs a fix."
+            + "And then the last thing is the docs, which still mention the old flag, and that needs a fix. "
+            + String(repeating: "and then we kept going without ever stopping the sentence, ", count: 8)
+            + "until the end."
         let words = final.split(separator: " ")
         let finalChunks = RewriteChunker.chunks(final)
         for length in 1...words.count {
@@ -30,6 +32,14 @@ struct RewriteChunkerTests {
             let closed = RewriteChunker.closedChunks(prefix)
             #expect(Array(finalChunks.prefix(closed.count)) == closed, "Prefix of \(length) words changed a closed chunk")
         }
+    }
+
+    @Test func anUnpunctuatedRambleClosesAtACommaOnceItIsLong() {
+        // Otherwise the whole ramble is one open chunk, rewritten after stop.
+        let ramble = String(repeating: "and then we kept going without ever stopping the sentence, ", count: 10)
+        let chunks = RewriteChunker.chunks(ramble)
+        #expect(chunks.count > 1)
+        #expect(chunks.dropLast().allSatisfy { $0.count <= RewriteChunker.maximumChunkLength + 80 })
     }
 
     @Test func emptyTextHasNoChunks() {
@@ -94,6 +104,34 @@ struct IncrementalRewriterTests {
         #expect(!processor.completed.contains(guess))
     }
 
+    /// Regression: a prefetch scheduled during recording can reach the actor
+    /// after the final rewrite has started. It used to cancel the chunk the
+    /// rewrite was awaiting, which threw CancellationError, and the whole
+    /// dictation was discarded as "cancelled".
+    @Test func aLatePrefetchCannotCancelWhatTheFinalRewriteNeeds() async throws {
+        let processor = RecordingProcessor(delay: 0.1)
+        let rewriter = makeRewriter(processor)
+        await rewriter.prefetch([first, second], speculative: true)
+        async let result = rewriter.rewrite("\(first) \(second)")
+        try await Task.sleep(nanoseconds: 20_000_000)
+        await rewriter.prefetch([first])
+        #expect(try await result == "[\(first)] [\(second)]")
+    }
+
+    @Test func aChunkWhoseRequestFailedIsRetriedNotLost() async throws {
+        let processor = FlakyProcessor(failures: 1)
+        let rewriter = IncrementalRewriter(processor: processor, mode: .myVoiceCasual, dictionary: [], snippets: [], language: nil)
+        #expect(try await rewriter.rewrite(first) == "ok")
+    }
+
+    @Test func aRetryWaitsItsTurnInTheQueue() async throws {
+        // Codex review: retrying outside the queue ran two requests at once.
+        let processor = FlakyProcessor(failures: 1, delay: 0.05)
+        let rewriter = IncrementalRewriter(processor: processor, mode: .myVoiceCasual, dictionary: [], snippets: [], language: nil)
+        _ = try await rewriter.rewrite("\(first) \(second)")
+        #expect(processor.maximumConcurrency == 1)
+    }
+
     @Test func carriesModeAndLanguageToEveryChunk() async throws {
         let processor = RecordingProcessor()
         let rewriter = IncrementalRewriter(processor: processor, mode: .myVoicePro, dictionary: [], snippets: [], language: "fr")
@@ -137,5 +175,32 @@ final class RecordingProcessor: PostProcessor, @unchecked Sendable {
         }
         lock.withLock { _completed.append(input.rawText) }
         return "[\(input.rawText)]"
+    }
+}
+
+final class FlakyProcessor: PostProcessor, @unchecked Sendable {
+    private let lock = NSLock()
+    private var failures: Int
+    private let delay: TimeInterval
+    private var active = 0
+    private(set) var maximumConcurrency = 0
+
+    init(failures: Int, delay: TimeInterval = 0) {
+        self.failures = failures
+        self.delay = delay
+    }
+
+    func process(_ input: PostProcessingInput) async throws -> String {
+        let fail = lock.withLock { () -> Bool in
+            active += 1
+            maximumConcurrency = max(maximumConcurrency, active)
+            guard failures > 0 else { return false }
+            failures -= 1
+            return true
+        }
+        defer { lock.withLock { active -= 1 } }
+        if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+        if fail { throw CancellationError() }
+        return "ok"
     }
 }

@@ -181,6 +181,10 @@ public final class LiveTranscriptionController: LiveTranscriptionControlling {
 
     /// How much trailing silence at stop counts as "finished speaking".
     static let finishedSpeakingSamples = 4_800
+    /// Stricter than the decode loop's idea of silence. Skipping the tail
+    /// decode on a false "silence" drops words that were said, such as a
+    /// sentence trailing off, while a false "speech" costs one short decode.
+    static let finishedSpeakingThreshold: Float = 0.05
 
     private let source: any LiveAudioSource
     private let engineProvider: EngineProvider
@@ -326,14 +330,18 @@ public final class LiveTranscriptionController: LiveTranscriptionControlling {
         // A decode in flight that already covers everything that was said is
         // worth waiting for. One that does not is abandoned: the tail decode
         // below covers its audio plus whatever it missed.
-        if let through = inFlightThrough, !buffer.isSilent(from: min(through, tailStart), to: total) {
+        if let through = inFlightThrough, !buffer.isSilent(from: min(through, tailStart), to: total, relativeThreshold: Self.finishedSpeakingThreshold) {
             abandonInFlight.set()
         }
         await task.value
+        // A newer session may have started while this one finished; its task
+        // is not ours to clear.
+        guard generation == session else { return nil }
         self.task = nil
-        guard generation == session, let engine, !buffer.hasOverflowed else { return nil }
+        guard let engine, !buffer.hasOverflowed else { return nil }
 
-        if state.decodedThrough > 0, buffer.isSilent(from: min(state.decodedThrough, tailStart), to: total) {
+        if state.decodedThrough > 0,
+           buffer.isSilent(from: min(state.decodedThrough, tailStart), to: total, relativeThreshold: Self.finishedSpeakingThreshold) {
             state.confirmPending(through: total)
             return StreamedTranscript(text: state.text, language: language)
         }

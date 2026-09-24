@@ -161,6 +161,68 @@ struct DictationSessionRunnerLiveTests {
         #expect(history.records.map(\.finalText) == ["batch result"], "A failed paste must never lose the transcript")
     }
 
+    /// Regression (Codex review): capture started before streaming
+    /// subscribed, so the first buffers were in the WAV but not the paste.
+    @Test func streamingIsListeningBeforeTheMicrophoneStarts() throws {
+        let live = FakeLiveTranscriptionController()
+        let recorder = OrderRecordingRecorder(live: live)
+        let runner = DictationSessionRunner(
+            recorder: recorder,
+            profile: LiveFakeProfileReader(),
+            history: LiveFakeHistoryWriter(),
+            pipelineFactory: { _ in fatalError("not reached") }
+        )
+        runner.liveTranscription = live
+
+        _ = try runner.startRecording()
+
+        #expect(recorder.liveStartsWhenCaptureBegan == 1)
+    }
+
+    @Test func aStopResumingAfterCancelAndRestartLeavesTheNewStreamRunning() async throws {
+        let live = SlowFinishLiveController()
+        let runner = makeRunner(live: nil)
+        runner.liveTranscription = live
+
+        _ = try runner.startRecording()
+        let stopping = Task { try await runner.stopDictation(selectedMode: .raw) }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        stopping.cancel()
+        runner.cancelRecording()
+        _ = try runner.startRecording()
+        let stopsBefore = live.stopCount
+        live.releaseFinish()
+        _ = await stopping.result
+
+        #expect(live.stopCount == stopsBefore, "The old stop must not stop the new recording's stream")
+    }
+
+    /// Codex review: cancelling through the runner (not the task) while the
+    /// stop awaited the pipeline let the cancelled recording be pasted.
+    @Test func aRecordingCancelledOnTheRunnerIsNeverPasted() async throws {
+        let inserter = CountingInserter()
+        let gate = PipelineGate()
+        let runner = DictationSessionRunner(
+            recorder: LiveFakeRecorder(audioFile: FileManager.default.temporaryDirectory.appendingPathComponent("alowd-gate-\(UUID().uuidString).wav")),
+            profile: LiveFakeProfileReader(),
+            history: LiveFakeHistoryWriter(),
+            pipelineFactory: { _ in
+                await gate.wait()
+                return DictationPipeline(engine: StubTranscriptionEngine(text: "cancelled words"), processor: RuleBasedPostProcessor(), inserter: inserter)
+            }
+        )
+
+        _ = try runner.startRecording()
+        let stopping = Task { try await runner.stopDictation(selectedMode: .raw) }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        runner.cancelRecording()
+        _ = try runner.startRecording()
+        await gate.open()
+
+        await #expect(throws: CancellationError.self) { try await stopping.value }
+        #expect(inserter.count == 0)
+    }
+
     // MARK: - Fixtures
 
     private func makeRunner(
@@ -344,4 +406,70 @@ private final class RecordingHistoryWriter: TranscriptHistoryWriting, @unchecked
 
 private final class FailingInserter: TextInserter, @unchecked Sendable {
     func insert(_ text: String) throws { throw TextInserterError.accessibilityNotGranted }
+}
+
+private final class OrderRecordingRecorder: TemporaryAudioRecorder, @unchecked Sendable {
+    private let live: FakeLiveTranscriptionController
+    private(set) var liveStartsWhenCaptureBegan = -1
+    private(set) var isRecording = false
+
+    init(live: FakeLiveTranscriptionController) {
+        self.live = live
+    }
+
+    func beginTemporaryRecording() throws -> URL {
+        liveStartsWhenCaptureBegan = MainActor.assumeIsolated { live.startCount }
+        isRecording = true
+        return FileManager.default.temporaryDirectory.appendingPathComponent("alowd-order-\(UUID().uuidString).wav")
+    }
+
+    func finishTemporaryRecording() throws -> URL { throw AudioRecorderError.notRecording }
+    func discardTemporaryRecording() throws { isRecording = false }
+}
+
+/// A stream whose finish blocks until released, to hold a stop mid-flight.
+@MainActor
+private final class SlowFinishLiveController: LiveTranscriptionControlling {
+    private(set) var stopCount = 0
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+
+    func start(
+        onPartial: @escaping @MainActor @Sendable (String) -> Void,
+        onUpdate: @escaping @MainActor @Sendable (StreamingTranscriptUpdate) -> Void
+    ) {}
+
+    func finish() async -> StreamedTranscript? {
+        if !released {
+            await withCheckedContinuation { continuation = $0 }
+        }
+        return nil
+    }
+
+    func releaseFinish() {
+        released = true
+        continuation?.resume()
+        continuation = nil
+    }
+
+    func stop() { stopCount += 1 }
+}
+
+private actor PipelineGate {
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var isOpen = false
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
+    }
+}
+
+private final class CountingInserter: TextInserter, @unchecked Sendable {
+    private(set) var count = 0
+    func insert(_ text: String) throws { count += 1 }
 }

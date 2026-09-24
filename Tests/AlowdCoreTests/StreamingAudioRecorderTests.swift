@@ -172,6 +172,36 @@ struct LiveSampleBufferTests {
         #expect(buffer.isSilent(from: frame * 20, to: frame * 30))
     }
 
+    /// Regression (Codex review): a fixed 0.004 floor classed a quiet voice
+    /// on a quiet mic as silence, so its words were never decoded.
+    @Test func aVoiceBelowAnyFixedFloorIsStillSpeech() {
+        let frame = LiveSampleBuffer.frameLength
+        let buffer = LiveSampleBuffer()
+        buffer.append([Float](repeating: 0.0005, count: frame * 10))  // quiet room
+        buffer.append([Float](repeating: 0.003, count: frame * 20))   // quiet voice
+        #expect(!buffer.isSilent(from: frame * 10, to: frame * 30))
+        #expect(buffer.isSilent(from: 0, to: frame * 10))
+    }
+
+    /// A sentence trailing off is far quieter than its loudest vowels; at
+    /// stop it must still count as speech, or its words are dropped.
+    @Test func aTrailingOffVoiceIsSpeechAtTheStopThreshold() {
+        let frame = LiveSampleBuffer.frameLength
+        let buffer = LiveSampleBuffer()
+        buffer.append([Float](repeating: 0.001, count: frame * 5))
+        buffer.append([Float](repeating: 0.2, count: frame * 40))
+        buffer.append([Float](repeating: 0.02, count: frame * 10))  // "...so yeah."
+        #expect(!buffer.isSilent(from: frame * 45, to: frame * 55, relativeThreshold: 0.05))
+    }
+
+    @Test func speechWithoutAPauseIsNotSilence() {
+        // No quiet frames at all, so the noise-floor estimate is speech.
+        let buffer = LiveSampleBuffer()
+        buffer.append([Float](repeating: 0.2, count: LiveSampleBuffer.frameLength * 30))
+        #expect(!buffer.isSilent(from: 0, to: LiveSampleBuffer.frameLength * 30))
+        #expect(!buffer.isSilent(from: 0, to: LiveSampleBuffer.frameLength * 30, relativeThreshold: 0.05))
+    }
+
     @Test func resetClearsEverything() {
         let buffer = LiveSampleBuffer(maxSamples: 2)
         buffer.append([1, 2, 3])
