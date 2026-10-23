@@ -7,12 +7,14 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: macos-14
+    # Package.swift needs Swift tools 6.0+. macos-14 defaults to Xcode 15.4
+    # (Swift 5.10); macos-26 defaults to Xcode 26.x.
+    runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache SwiftPM
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             .build
@@ -22,7 +24,9 @@ jobs:
             ${{ runner.os }}-swiftpm-
 
       - name: Build
-        run: swift build
+        run: |
+          swift --version
+          swift build
 
       - name: Test
         run: swift test
